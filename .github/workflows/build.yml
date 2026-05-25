@@ -23,11 +23,10 @@ jobs:
       - name: 编译内核
         uses: dabao1955/kernel_build_action@main
         with:
-          kernel-url: https://github.com/${{ github.repository }}
-          kernel-branch: ${{ github.ref_name }}
-          kernel-dir: .                          # 使用当前已检出的源码，而非重新克隆
+          # 关键修改：将 kernel-url 设为本地路径 '.' 以禁止内部克隆
+          kernel-url: .
+          kernel-dir: .
           config: sun_consolidate.config
           arch: arm64
-          other-clang-url: "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz"
-          # 如需 KernelSU 则取消下一行注释
-          # ksu: true
+          # 关键修改：使用 proton-clang，彻底告别 binutils 问题
+          proton-clang: true
