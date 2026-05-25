@@ -54,57 +54,51 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
-      - name: Prepare Dummy Drivers
+      # 👇 已修复：可匹配行尾带注释的 source 行
+      - name: Disable Missing Drivers (Auto-remove stale references)
         run: |
           cd ${{ env.KERNEL_DIR }}
-
-          # ---- 1. 清理不需要的 Oplus 专有驱动 ----
-          rm -rf drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator drivers/power/oplus
-          rm -rf drivers/soc/oplus/boot drivers/soc/oplus/multimedia
-
-          mkdir -p drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator/oplus_haptic drivers/misc/vibrator/haptic_feedback drivers/power/oplus
-          mkdir -p drivers/soc/oplus/boot drivers/soc/oplus/multimedia
-
-          printf 'menuconfig DUMMY_KFW\n\tbool "Dummy for kernelFwUpdate"\n\tdefault n\n' > drivers/base/kernelFwUpdate/Kconfig
-          touch drivers/base/kernelFwUpdate/Makefile
-          printf 'menuconfig DUMMY_TPN\n\tbool "Dummy for touchpanel_notify"\n\tdefault n\n' > drivers/base/touchpanel_notify/Kconfig
-          touch drivers/base/touchpanel_notify/Makefile
-          printf 'menuconfig DUMMY_MGT\n\tbool "Dummy for magtransfer"\n\tdefault n\n' > drivers/base/magtransfer/Kconfig
-          touch drivers/base/magtransfer/Makefile
-          printf 'menuconfig DUMMY_OPLUS_HAPTIC\n\tbool "Dummy for oplus_haptic"\n\tdefault n\n' > drivers/misc/vibrator/oplus_haptic/Kconfig
-          touch drivers/misc/vibrator/oplus_haptic/Makefile
-          printf 'menuconfig DUMMY_HAP\n\tbool "Dummy for haptic_feedback"\n\tdefault n\n' > drivers/misc/vibrator/haptic_feedback/Kconfig
-          touch drivers/misc/vibrator/haptic_feedback/Makefile
-          printf 'menuconfig DUMMY_OPLUS_POWER\n\tbool "Dummy for oplus power"\n\tdefault n\n' > drivers/power/oplus/Kconfig
-          touch drivers/power/oplus/Makefile
-
-          touch drivers/soc/oplus/boot/Makefile
-          printf 'menuconfig DUMMY_OPLUS_BOOT\n\tbool "Dummy for oplus boot"\n\tdefault n\n' > drivers/soc/oplus/boot/Kconfig
-          touch drivers/soc/oplus/multimedia/Makefile
-          printf 'menuconfig DUMMY_OPLUS_MULTIMEDIA\n\tbool "Dummy for oplus multimedia"\n\tdefault n\n' > drivers/soc/oplus/multimedia/Kconfig
-
-          # ---- 2. 自动扫描并补齐所有缺失的 Kconfig / Makefile ----
-          echo "=== 扫描缺失的 Kconfig 文件 ==="
-          grep -r --include=Kconfig -Po 'source "\K[^"]+' | while read f; do
-            if [ ! -f "$f" ]; then
-              mkdir -p "$(dirname "$f")"
-              echo "# dummy" > "$f"
-              echo "  → 创建缺失 Kconfig: $f"
-            fi
-          done
-
-          echo "=== 扫描缺失的 Makefile 目录 ==="
-          grep -r --include=Makefile -Po 'obj-[\w$\(\)]+\s*[+:]=?\s*\K\S+' | while read entry; do
-            if echo "$entry" | grep -q '/$'; then
-              dir="${entry%/}"
-              if [ ! -f "$dir/Makefile" ]; then
-                mkdir -p "$dir"
-                touch "$dir/Makefile"
-                echo "  → 创建缺失 Makefile: $dir/Makefile"
+          echo "=== 开始注释缺失的 Kconfig source 引用 ==="
+          find . -name "Kconfig" -type f | while read f; do
+            cp "$f" "$f.bak"
+            while IFS= read -r line; do
+              # 修改后的正则：允许双引号后有任意内容（注释等）
+              if echo "$line" | grep -qE '^\s*source\s+"[^"]*"'; then
+                # 提取路径：source " 和第一个 " 之间的内容
+                src_path=$(echo "$line" | sed -E 's/^\s*source\s+"([^"]*)".*/\1/')
+                if [ ! -f "$src_path" ]; then
+                  echo "# [DISABLED] $line  (missing: $src_path)" >> "$f.new"
+                else
+                  echo "$line" >> "$f.new"
+                fi
+              else
+                echo "$line" >> "$f.new"
               fi
-            fi
+            done < "$f.bak"
+            mv "$f.new" "$f"
+            rm "$f.bak"
           done
-          echo "=== 自动补齐完成 ==="
+
+          echo "=== 开始注释缺失的 Makefile obj- 目录引用 ==="
+          find . -name "Makefile" -type f | while read f; do
+            cp "$f" "$f.bak"
+            while IFS= read -r line; do
+              # 同样放宽匹配：允许行尾有注释或空格
+              if echo "$line" | grep -qE '^\s*obj-\w+\s*[+:]=\s*.*\/'; then
+                dir_entry=$(echo "$line" | sed -E 's/^.*[+:]=\s*(.*)\/.*$/\1/' | xargs)
+                if [ -n "$dir_entry" ] && [ ! -f "$dir_entry/Makefile" ]; then
+                  echo "# [DISABLED] $line  (missing directory: $dir_entry)" >> "$f.new"
+                else
+                  echo "$line" >> "$f.new"
+                fi
+              else
+                echo "$line" >> "$f.new"
+              fi
+            done < "$f.bak"
+            mv "$f.new" "$f"
+            rm "$f.bak"
+          done
+          echo "=== 缺失引用全部注释完毕 ==="
 
       - name: Enable FUSE Passthrough (Config Modification)
         if: inputs.enable_fuse_passthrough
