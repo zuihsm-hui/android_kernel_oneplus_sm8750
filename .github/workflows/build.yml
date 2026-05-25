@@ -59,7 +59,7 @@ jobs:
           cd ${{ env.KERNEL_DIR }}
 
           echo "=== 1. 注释缺失的 Kconfig source 引用 ==="
-          find . -name "Kconfig" -type f | while read f; do
+          find . -name "Kconfig" -type f 2>/dev/null | while read f; do
             cp "$f" "$f.bak"
             while IFS= read -r line; do
               if echo "$line" | grep -qE '^\s*source\s+"[^"]*"'; then
@@ -78,8 +78,8 @@ jobs:
             rm "$f.bak"
           done
 
-          echo "=== 2. 注释缺失的 Makefile obj- 目录引用（路径相对于当前 Makefile） ==="
-          find . -name "Makefile" -type f | while read f; do
+          echo "=== 2. 注释缺失的 Makefile obj- 目录引用 ==="
+          find . -name "Makefile" -type f 2>/dev/null | while read f; do
             dir=$(dirname "$f")
             cp "$f" "$f.bak"
             (
@@ -88,20 +88,23 @@ jobs:
                 if echo "$line" | grep -qE '^\s*obj-\w+\s*[+:]=\s*.*\/'; then
                   entry=$(echo "$line" | sed -E 's/^.*[+:]=\s*(.*)\/.*$/\1/' | xargs)
                   if [ -n "$entry" ] && [ ! -f "$entry/Makefile" ]; then
-                    echo "# [DISABLED] $line  (missing directory: $entry)" >> "$f.new"
+                    echo "# [DISABLED] $line  (missing directory: $entry)" >> Makefile.new
                   else
-                    echo "$line" >> "$f.new"
+                    echo "$line" >> Makefile.new
                   fi
                 else
-                  echo "$line" >> "$f.new"
+                  echo "$line" >> Makefile.new
                 fi
-              done < "$f.bak"
+              done < Makefile.bak
             )
-            # 如果 cd 后循环没有生成 .new，则补空文件
-            if [ ! -f "$dir/$f.new" ]; then
-              touch "$dir/$f.new"
+            # 子 shell 产生的 .new 文件在 $dir 下
+            if [ -f "$dir/Makefile.new" ]; then
+              mv "$dir/Makefile.new" "$f"
+            else
+              # 若文件为空循环未执行则手动创建
+              touch "$dir/Makefile.new"
+              mv "$dir/Makefile.new" "$f"
             fi
-            mv "$dir/$f.new" "$f"
             rm "$f.bak"
           done
 
@@ -112,7 +115,6 @@ jobs:
         run: |
           CONFIG_FILE="arch/arm64/configs/vendor/sun_consolidate.config"
           if [ -f "$CONFIG_FILE" ]; then
-            # 确保 FUSE_FS 也启用（FUSE_PASSTHROUGH 的依赖）
             echo "CONFIG_FUSE_FS=y" >> "$CONFIG_FILE"
             echo "CONFIG_FUSE_PASSTHROUGH=y" >> "$CONFIG_FILE"
             echo "FUSE Passthrough (and FUSE_FS) enabled in config"
@@ -129,7 +131,6 @@ jobs:
           make clean || true
           make mrproper || true
           make vendor/sun_consolidate.config
-          # 强制启用 FUSE_PASSTHROUGH（即使 defconfig 合并可能丢失）
           if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
             scripts/config --enable CONFIG_FUSE_FS
             scripts/config --enable CONFIG_FUSE_PASSTHROUGH
