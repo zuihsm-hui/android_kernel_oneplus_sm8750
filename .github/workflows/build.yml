@@ -96,7 +96,7 @@ jobs:
           printf 'menuconfig DUMMY_OPLUS_POWER\n\tbool "Dummy for oplus power"\n\tdefault n\n' > drivers/power/oplus/Kconfig
           touch drivers/power/oplus/Makefile
 
-      - name: Enable FUSE Passthrough (Config Modification)        if: ${{ inputs.enable_fuse_passthrough == true }}
+      - name: Enable FUSE Passthrough (Config Modification)        if: ${{ inputs.enable_fuse_passthrough == true }}  # <--- 这里已换行！
         run: |
           CONFIG_FILE="arch/arm64/configs/vendor/sun_consolidate.config"
           if [ -f "$CONFIG_FILE" ]; then
@@ -145,7 +145,7 @@ jobs:
           zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" "*.md" "LICENSE" "README*" "*.sh~"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4        with:
+        uses: actions/upload-artifact@v4        with:                                        # <--- 这里已换行！
           name: AnyKernel3-OP5D0DL1
           path: AnyKernel3-OP5D0DL1.zip
           retention-days: 7
