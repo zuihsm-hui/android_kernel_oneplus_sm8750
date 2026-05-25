@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       enable_fuse_passthrough:
-        description: Enable FUSE Passthrough
+        description: 'Enable FUSE Passthrough'
         type: boolean
         default: true
 
@@ -12,7 +12,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
     steps:
       - name: Checkout
@@ -22,17 +22,17 @@ jobs:
           lfs: false
 
       - name: Enable FUSE
-        if: github.event.inputs.enable_fuse_passthrough == 'true'
+        if: ${{ inputs.enable_fuse_passthrough == true }}
         run: |
           CONFIG_FILE="arch/arm64/configs/vendor/sun_consolidate.config"
           if [ -f "$CONFIG_FILE" ]; then
             echo "CONFIG_FUSE_PASSTHROUGH=y" >> "$CONFIG_FILE"
           else
-            echo "Config not found"
+            echo "Error: $CONFIG_FILE not found"
             exit 1
           fi
 
-      - name: Set Env
+      - name: Set Environment
         run: |
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
@@ -44,21 +44,23 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/proton-clang
-          key: clang-r563880c-v1
+          key: proton-clang-r563880c
 
       - name: Download Clang
-        if: steps.cache-clang.outputs.cache-hit != 'true'        run: |
-          mkdir -p ${{ github.workspace }}/proton-clang
-          curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C ${{ github.workspace }}/proton-clang
-          rm -f ${{ github.workspace }}/proton-clang/bin/ld* 2>/dev/null || true
-          chmod +x ${{ github.workspace }}/proton-clang/bin/* 2>/dev/null || true
+        if: ${{ steps.cache-clang.outputs.cache-hit != 'true' }}
+        run: |
+          CLANG_DIR="${{ github.workspace }}/proton-clang"
+          mkdir -p "$CLANG_DIR"
+          curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C "$CLANG_DIR"
+          rm -f "$CLANG_DIR/bin/ld" "$CLANG_DIR/bin/ld.bfd" "$CLANG_DIR/bin/ld.gold" 2>/dev/null || true
+          chmod +x "$CLANG_DIR/bin/"* 2>/dev/null || true
 
-      - name: Setup Clang
+      - name: Verify Clang
         run: |
           echo "CLANG_BIN_DIR=${{ github.workspace }}/proton-clang/bin" >> $GITHUB_ENV
-          ${{ github.workspace }}/proton-clang/bin/clang-21 --version
+          "${{ github.workspace }}/proton-clang/bin/clang-21" --version
 
-      - name: Install Deps
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
@@ -66,44 +68,54 @@ jobs:
       - name: Build Kernel
         env:
           PATH: "${{ env.CLANG_BIN_DIR }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-          CC: clang
-          LD: ld.lld
-          AR: llvm-ar
-          NM: llvm-nm
-          STRIP: llvm-strip
-          OBJCOPY: llvm-objcopy
-          HOSTCC: clang
-          HOSTCXX: clang++
-          HOSTLD: ld.lld
-          HOSTAR: llvm-ar
-          KCFLAGS: "-Wno-error=unused-but-set-variable -Wno-error=unused-function -Wno-error=deprecated-declarations"
         run: |
           cd ${{ env.KERNEL_DIR }}
+
+          # 清理残留
           make clean || true
           make mrproper || true
+
+          # 删除原有驱动目录（用于跳过闭源驱动编译）
           rm -rf drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator/haptic_feedback
+
+          # 创建空目录
           mkdir -p drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator/haptic_feedback
-          echo 'menuconfig DUMMY1' > drivers/base/kernelFwUpdate/Kconfig
+
+          # 创建 dummy Kconfig 和 Makefile（已修正换行）
+          echo 'menuconfig DUMMY_KFW' > drivers/base/kernelFwUpdate/Kconfig
           echo '  bool "Dummy"' >> drivers/base/kernelFwUpdate/Kconfig
           echo '  default n' >> drivers/base/kernelFwUpdate/Kconfig
           touch drivers/base/kernelFwUpdate/Makefile
-          echo 'menuconfig DUMMY2' > drivers/base/touchpanel_notify/Kconfig
+
+          echo 'menuconfig DUMMY_TPN' > drivers/base/touchpanel_notify/Kconfig
           echo '  bool "Dummy"' >> drivers/base/touchpanel_notify/Kconfig
           echo '  default n' >> drivers/base/touchpanel_notify/Kconfig
           touch drivers/base/touchpanel_notify/Makefile
-          echo 'menuconfig DUMMY3' > drivers/base/magtransfer/Kconfig
+
+          echo 'menuconfig DUMMY_MGT' > drivers/base/magtransfer/Kconfig
           echo '  bool "Dummy"' >> drivers/base/magtransfer/Kconfig
           echo '  default n' >> drivers/base/magtransfer/Kconfig
           touch drivers/base/magtransfer/Makefile
-          echo 'menuconfig DUMMY4' > drivers/misc/vibrator/haptic_feedback/Kconfig
-          echo '  bool "Dummy"' >> drivers/misc/vibrator/haptic_feedback/Kconfig          echo '  default n' >> drivers/misc/vibrator/haptic_feedback/Kconfig
+
+          echo 'menuconfig DUMMY_HAP' > drivers/misc/vibrator/haptic_feedback/Kconfig
+          echo '  bool "Dummy"' >> drivers/misc/vibrator/haptic_feedback/Kconfig
+          echo '  default n' >> drivers/misc/vibrator/haptic_feedback/Kconfig
           touch drivers/misc/vibrator/haptic_feedback/Makefile
+
+          # 加载 vendor 配置
           make vendor/sun_consolidate.config
-          grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE missing"; exit 1; }
-          make -j$(nproc) Image.gz dtbs
+
+          # 如果启用了 FUSE，则检查配置是否生效
+          if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
+            grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE missing"; exit 1; }
+          fi
+
+          # 使用 LLVM=1 编译（无需显式设置 CC/LD 等）
+          make LLVM=1 -j$(nproc) Image.gz dtbs
+
           ls -lh arch/arm64/boot/Image.gz
 
-      - name: Prepare AK3
+      - name: Prepare AnyKernel3
         run: |
           test -d "${{ env.AK3_DIR }}/tools" || { echo "AK3 incomplete"; exit 1; }
           cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz ${{ env.AK3_DIR }}/Image.gz
@@ -112,12 +124,12 @@ jobs:
           find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/ -name "*.dtb" -maxdepth 3 -exec cp {} ${{ env.AK3_DIR }}/dtb/ \; 2>/dev/null || true
           test -f "${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img" && cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img ${{ env.AK3_DIR }}/dtbo.img || true
 
-      - name: Package AK3
+      - name: Package AnyKernel3
         run: |
           cd ${{ env.AK3_DIR }}
           zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" "*.md" "LICENSE" "README*" "*.sh~"
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AnyKernel3-OP5D0DL1
