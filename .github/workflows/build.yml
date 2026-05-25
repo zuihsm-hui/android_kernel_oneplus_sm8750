@@ -13,16 +13,19 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-      - name: 检出内核源码
+      - name: 检出本地仓库（内核源码 + AnyKernel3）
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # 🔑 只拉取最近 1 次提交，大幅加速检出（内核仓库通常很大）
+          fetch-depth: 1
+          # 如果使用 Git Submodule 管理 AnyKernel3，取消下一行注释
+          # submodules: recursive
 
       - name: 开启 FUSE Passthrough (可选)
         if: ${{ github.event.inputs.enable_fuse_passthrough == 'true' }}
         run: |
           echo "CONFIG_FUSE_PASSTHROUGH=y" >> arch/arm64/configs/vendor/sun_consolidate.config
-          echo "已启用 CONFIG_FUSE_PASSTHROUGH"
+          echo "✅ 已启用 CONFIG_FUSE_PASSTHROUGH"
 
       - name: 设置环境变量
         run: |
@@ -30,16 +33,26 @@ jobs:
           echo "SUBARCH=arm64" >> $GITHUB_ENV
           echo "CLANG_DIR=${{ github.workspace }}/proton-clang" >> $GITHUB_ENV
           echo "AK3_DIR=${{ github.workspace }}/anykernel3" >> $GITHUB_ENV
+          echo "KERNEL_DIR=${{ github.workspace }}" >> $GITHUB_ENV  # 🔑 内核源码根目录
 
       - name: 下载 Proton Clang
         run: |
           mkdir -p ${{ env.CLANG_DIR }}
           curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C ${{ env.CLANG_DIR }} --strip-components=1
+          echo "✅ Proton Clang 下载完成"
+          ${{ env.CLANG_DIR }}/bin/clang --version
 
-      - name: 安装依赖
+      - name: 安装编译依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
+          sudo apt-get install -y \
+            git ccache automake lzop bison gperf build-essential zip curl \
+            zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev \            libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool \
+            dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen \
+            libswitch-perl policycoreutils minicom libxml-sax-base-perl \
+            libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev \
+            x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev \
+            xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
       - name: 编译内核
         env:
@@ -54,34 +67,80 @@ jobs:
           HOSTCXX: clang++
           KCFLAGS: "-Wno-error=unused-but-set-variable -Wno-error=unused-function -Wno-error=deprecated-declarations"
         run: |
+          cd ${{ env.KERNEL_DIR }}
+          
+          # 清理（可选，首次构建可跳过）
           make clean || true
           make mrproper || true
+          
+          # 加载配置
           make sun_consolidate.config
-          grep CONFIG_FUSE_PASSTHROUGH .config # 验证配置
+          
+          # 验证 FUSE 配置是否生效
+          if grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config; then
+            echo "✅ CONFIG_FUSE_PASSTHROUGH 已启用"
+          else
+            echo "❌ CONFIG_FUSE_PASSTHROUGH 未找到，检查配置文件路径"
+            exit 1
+          fi
+          
+          # 开始编译
+          echo "🚀 开始编译内核 (使用 $(nproc) 线程)..."
           make -j$(nproc) Image.gz dtbs
-          echo "编译完成！"
+          
+          echo "✅ 内核编译完成！"
+          ls -lh arch/arm64/boot/Image.gz
 
       - name: 准备 AnyKernel3 打包
         run: |
-          # 复制内核镜像到 AnyKernel3 目录
-          cp arch/arm64/boot/Image.gz ${{ env.AK3_DIR }}/Image.gz
+          # 验证 AnyKernel3 目录
+          if [ ! -d "${{ env.AK3_DIR }}/tools" ]; then
+            echo "❌ 错误: anykernel3 目录不完整！请确认已添加到仓库"
+            echo "📁 当前目录结构:"            ls -la
+            exit 1
+          fi
           
-          # 复制 DTB 文件 (根据实际路径调整，通常是 vendor/qcom 或 qcom)
-          # 注意：OnePlus SM8750 可能需要将所有 dtb 合并或单独放置，请参考 AnyKernel3 文档
-          find arch/arm64/boot/dts/vendor/qcom/ -name "*.dtb" -exec cp {} ${{ env.AK3_DIR }}/dtb \;
+          # 复制内核镜像
+          cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz ${{ env.AK3_DIR }}/Image.gz
           
-          # 如果 AnyKernel3 需要特定的 dtbo.img，也需要复制
-          # cp arch/arm64/boot/dtbo.img ${{ env.AK3_DIR }}/dtbo.img || true
+          # 复制 DTB 文件 (OnePlus SM8750 路径)
+          mkdir -p ${{ env.AK3_DIR }}/dtb
+          DTB_COUNT=$(find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor/qcom/ -name "*.dtb" 2>/dev/null | wc -l)
+          if [ "$DTB_COUNT" -gt 0 ]; then
+            find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor/qcom/ -name "*.dtb" -exec cp {} ${{ env.AK3_DIR }}/dtb/ \;
+            echo "✅ 已复制 $DTB_COUNT 个 DTB 文件"
+          else
+            echo "⚠️ 未找到 DTB 文件，尝试备用路径..."
+            find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/ -name "*.dtb" -maxdepth 3 -exec cp {} ${{ env.AK3_DIR }}/dtb/ \; || true
+          fi
+          
+          # 复制 dtbo.img (如果存在)
+          if [ -f "${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img" ]; then
+            cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img ${{ env.AK3_DIR }}/dtbo.img
+            echo "✅ 已复制 dtbo.img"
+          fi
+          
+          echo "📦 AnyKernel3 目录内容:"
+          ls -lh ${{ env.AK3_DIR }}/
 
       - name: 打包 AnyKernel3.zip
         run: |
           cd ${{ env.AK3_DIR }}
-          zip -r9 ../AnyKernel3.zip * -x .git* -x *.md
+          # 排除无关文件，生成 ZIP
+          zip -r9 ../AnyKernel3-OP5D0DL1.zip * \
+            -x ".git*" -x "*.md" -x "LICENSE" -x "README*" -x "*.sh~"
           cd ..
-          echo "打包完成！"
+          echo "✅ 打包完成: $(ls -lh AnyKernel3-OP5D0DL1.zip)"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: AnyKernel3-Zip
-          path: AnyKernel3.zip
+          name: AnyKernel3-OP5D0DL1
+          path: AnyKernel3-OP5D0DL1.zip
+          retention-days: 7
+          
+      - name: 构建完成通知
+        run: |
+          echo "🎉 构建成功！"
+          echo "📥 下载链接将在 workflow 页面显示"
+          echo "📱 刷机前请务必备份原厂 boot.img"
