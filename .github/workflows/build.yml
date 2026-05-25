@@ -65,9 +65,10 @@ jobs:
                 src=$(echo "$line" | sed -E 's/^\s*source\s+"([^"]*)".*/\1/')
                 if [ ! -f "$src" ]; then
                   parent=$(dirname "$src")
-                  # 如果父路径存在但不是目录（可能是之前误创建的同名文件），则删除
-                  if [ -e "$parent" ] && [ ! -d "$parent" ]; then
+                  # 如果父路径是一个普通文件（非目录），则删除，防止 mkdir 失败
+                  if [ -f "$parent" ]; then
                     rm -f "$parent"
+                    echo "  Removed file to make directory: $parent"
                   fi
                   mkdir -p "$parent"
                   echo "# placeholder" > "$src"
@@ -92,7 +93,6 @@ jobs:
                 echo "$line" >> "$f.new"
               fi
             done < "$f.bak"
-            # 防止空文件
             if [ ! -f "$f.new" ]; then
               touch "$f.new"
             fi
