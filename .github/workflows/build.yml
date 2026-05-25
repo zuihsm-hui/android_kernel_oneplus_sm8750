@@ -62,7 +62,6 @@ jobs:
           find . -name "Kconfig" -type f | while read f; do
             cp "$f" "$f.bak"
             while IFS= read -r line; do
-              # 匹配以 source "..." 开头的行（允许行尾有注释或空格）
               if echo "$line" | grep -qE '^\s*source\s+"[^"]*"'; then
                 src=$(echo "$line" | sed -E 's/^\s*source\s+"([^"]*)".*/\1/')
                 if [ ! -f "$src" ]; then
@@ -74,34 +73,35 @@ jobs:
                 echo "$line" >> "$f.new"
               fi
             done < "$f.bak"
-            # 如果源文件是空的，循环不会生成 .new，需要补一个空文件
-            if [ ! -f "$f.new" ]; then
-              touch "$f.new"
-            fi
+            [ ! -f "$f.new" ] && touch "$f.new"
             mv "$f.new" "$f"
             rm "$f.bak"
           done
 
-          echo "=== 2. 注释缺失的 Makefile obj- 目录引用 ==="
+          echo "=== 2. 注释缺失的 Makefile obj- 目录引用（路径相对于当前 Makefile） ==="
           find . -name "Makefile" -type f | while read f; do
+            dir=$(dirname "$f")
             cp "$f" "$f.bak"
-            while IFS= read -r line; do
-              # 匹配 obj-... += xxx/ 的行
-              if echo "$line" | grep -qE '^\s*obj-\w+\s*[+:]=\s*.*\/'; then
-                dir_entry=$(echo "$line" | sed -E 's/^.*[+:]=\s*(.*)\/.*$/\1/' | xargs)
-                if [ -n "$dir_entry" ] && [ ! -f "$dir_entry/Makefile" ]; then
-                  echo "# [DISABLED] $line  (missing directory: $dir_entry)" >> "$f.new"
+            (
+              cd "$dir" || exit 1
+              while IFS= read -r line; do
+                if echo "$line" | grep -qE '^\s*obj-\w+\s*[+:]=\s*.*\/'; then
+                  entry=$(echo "$line" | sed -E 's/^.*[+:]=\s*(.*)\/.*$/\1/' | xargs)
+                  if [ -n "$entry" ] && [ ! -f "$entry/Makefile" ]; then
+                    echo "# [DISABLED] $line  (missing directory: $entry)" >> "$f.new"
+                  else
+                    echo "$line" >> "$f.new"
+                  fi
                 else
                   echo "$line" >> "$f.new"
                 fi
-              else
-                echo "$line" >> "$f.new"
-              fi
-            done < "$f.bak"
-            if [ ! -f "$f.new" ]; then
-              touch "$f.new"
+              done < "$f.bak"
+            )
+            # 如果 cd 后循环没有生成 .new，则补空文件
+            if [ ! -f "$dir/$f.new" ]; then
+              touch "$dir/$f.new"
             fi
-            mv "$f.new" "$f"
+            mv "$dir/$f.new" "$f"
             rm "$f.bak"
           done
 
@@ -112,8 +112,10 @@ jobs:
         run: |
           CONFIG_FILE="arch/arm64/configs/vendor/sun_consolidate.config"
           if [ -f "$CONFIG_FILE" ]; then
+            # 确保 FUSE_FS 也启用（FUSE_PASSTHROUGH 的依赖）
+            echo "CONFIG_FUSE_FS=y" >> "$CONFIG_FILE"
             echo "CONFIG_FUSE_PASSTHROUGH=y" >> "$CONFIG_FILE"
-            echo "FUSE Passthrough enabled in config"
+            echo "FUSE Passthrough (and FUSE_FS) enabled in config"
           else
             echo "Error: $CONFIG_FILE not found"
             exit 1
@@ -127,7 +129,11 @@ jobs:
           make clean || true
           make mrproper || true
           make vendor/sun_consolidate.config
+          # 强制启用 FUSE_PASSTHROUGH（即使 defconfig 合并可能丢失）
           if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
+            scripts/config --enable CONFIG_FUSE_FS
+            scripts/config --enable CONFIG_FUSE_PASSTHROUGH
+            make olddefconfig
             grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE missing in .config"; exit 1; }
           fi
           make LLVM=1 -j$(nproc) Image.gz dtbs
