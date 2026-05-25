@@ -47,7 +47,7 @@ jobs:
           path: ${{ github.workspace }}/proton-clang
           key: proton-clang-r563880c
 
-      - name: 下载 Proton Clang        if: ${{ steps.cache-clang.outputs.cache-hit != 'true' }}
+      - name: 下载 Proton Clang        if: "steps.cache-clang.outputs.cache-hit != 'true'"
         run: |
           CLANG_ROOT="${{ github.workspace }}/proton-clang"
           mkdir -p "$CLANG_ROOT"
