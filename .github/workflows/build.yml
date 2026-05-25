@@ -71,44 +71,55 @@ jobs:
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          # 1. 彻底删除可能引起冲突的驱动目录或文件（包括文件类型的 vibrator）
+          # 1. 彻底删除可能引起冲突的目录（包括文件类型的 vibrator）
           rm -rf drivers/base/kernelFwUpdate \
                  drivers/base/touchpanel_notify \
                  drivers/base/magtransfer \
-                 drivers/misc/vibrator   # 关键修复：删除整个 vibrator（可能是文件或目录）
+                 drivers/misc/vibrator
 
-          # 2. 创建干净的 dummy 目录结构
+          # 2. 创建完整的 dummy 目录结构（包含 oplus_haptic 和 haptic_feedback）
           mkdir -p drivers/base/kernelFwUpdate \
                    drivers/base/touchpanel_notify \
                    drivers/base/magtransfer \
+                   drivers/misc/vibrator/oplus_haptic \
                    drivers/misc/vibrator/haptic_feedback
 
-          # 3. 创建 dummy Kconfig 和 Makefile
+          # 3. 创建 dummy Kconfig 和 Makefile 文件
+          # kernelFwUpdate
           echo 'menuconfig DUMMY_KFW' > drivers/base/kernelFwUpdate/Kconfig
           echo '  bool "Dummy"' >> drivers/base/kernelFwUpdate/Kconfig
           echo '  default n' >> drivers/base/kernelFwUpdate/Kconfig
           touch drivers/base/kernelFwUpdate/Makefile
 
+          # touchpanel_notify
           echo 'menuconfig DUMMY_TPN' > drivers/base/touchpanel_notify/Kconfig
           echo '  bool "Dummy"' >> drivers/base/touchpanel_notify/Kconfig
           echo '  default n' >> drivers/base/touchpanel_notify/Kconfig
           touch drivers/base/touchpanel_notify/Makefile
 
+          # magtransfer
           echo 'menuconfig DUMMY_MGT' > drivers/base/magtransfer/Kconfig
           echo '  bool "Dummy"' >> drivers/base/magtransfer/Kconfig
           echo '  default n' >> drivers/base/magtransfer/Kconfig
           touch drivers/base/magtransfer/Makefile
 
+          # oplus_haptic (新增，解决 Kconfig 依赖)
+          echo 'menuconfig DUMMY_OPLUS_HAPTIC' > drivers/misc/vibrator/oplus_haptic/Kconfig
+          echo '  bool "Dummy for oplus_haptic"' >> drivers/misc/vibrator/oplus_haptic/Kconfig
+          echo '  default n' >> drivers/misc/vibrator/oplus_haptic/Kconfig
+          touch drivers/misc/vibrator/oplus_haptic/Makefile
+
+          # haptic_feedback
           echo 'menuconfig DUMMY_HAP' > drivers/misc/vibrator/haptic_feedback/Kconfig
           echo '  bool "Dummy"' >> drivers/misc/vibrator/haptic_feedback/Kconfig
           echo '  default n' >> drivers/misc/vibrator/haptic_feedback/Kconfig
           touch drivers/misc/vibrator/haptic_feedback/Makefile
 
-          # 4. 执行清理（现在所有 Makefile 均已就位）
+          # 4. 执行清理（现在所有需要的 Makefile 都已存在）
           make clean || true
           make mrproper || true
 
-          # 5. 加载 vendor 配置
+          # 5. 加载 vendor 配置（此时 Kconfig 依赖已满足）
           make vendor/sun_consolidate.config
 
           # 6. 如果启用了 FUSE，检查配置是否生效
