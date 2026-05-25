@@ -64,12 +64,13 @@ jobs:
               if echo "$line" | grep -qE '^\s*source\s+"([^"]*)"'; then
                 src=$(echo "$line" | sed -E 's/^\s*source\s+"([^"]*)".*/\1/')
                 if [ ! -f "$src" ]; then
-                  parent=$(dirname "$src")
-                  # 如果父路径是一个普通文件（非目录），则删除，防止 mkdir 失败
-                  if [ -f "$parent" ]; then
-                    rm -f "$parent"
-                    echo "  Removed file to make directory: $parent"
+                  parent=$(dirname "$src" | xargs)   # 去除路径首尾可能存在的空白字符
+                  # 如果 parent 存在且不是目录，则强制删除（可能是文件、符号链接等）
+                  if [ -e "$parent" ] && [ ! -d "$parent" ]; then
+                    rm -rf "$parent"
+                    echo "  Removed non-directory to make way: $parent"
                   fi
+                  # 安全创建目录（即使 parent 已作为目录存在也不会报错）
                   mkdir -p "$parent"
                   echo "# placeholder" > "$src"
                   echo "  Created placeholder Kconfig: $src"
