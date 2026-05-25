@@ -1,0 +1,35 @@
+name: Build OnePlus 13 Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_fuse_passthrough:
+        description: 'Enable FUSE Passthrough'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+
+      # 如果开启 FUSE_PASSTHROUGH，就修改 defconfig
+      - name: Enable FUSE Passthrough
+        if: ${{ github.event.inputs.enable_fuse_passthrough == 'true' }}
+        run: |
+          echo "CONFIG_FUSE_PASSTHROUGH=y" >> arch/arm64/configs/vendor/sun_defconfig
+
+      # 使用 kernel_build_action 进行编译
+      - name: Build Kernel
+        uses: dabao1955/kernel_build_action@v1.2  # 使用稳定版本
+        with:
+          kernel-url: https://github.com/${{ github.repository }}
+          kernel-branch: ${{ github.ref_name }}  # 使用当前分支
+          config: sun_defconfig
+          arch: arm64
+          aosp-clang: true
+          android-version: 15
+          # 可选：集成 KernelSU
+          # ksu: true
