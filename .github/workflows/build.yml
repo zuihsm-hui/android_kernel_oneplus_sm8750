@@ -1,10 +1,10 @@
-name: Build OnePlus 13 Kernel with FUSE Passthrough & AnyKernel3
+name: Build OnePlus 13 Kernel
 
 on:
   workflow_dispatch:
     inputs:
       enable_fuse_passthrough:
-        description: 'Enable FUSE Passthrough'
+        description: Enable FUSE Passthrough
         type: boolean
         default: true
 
@@ -15,56 +15,55 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           lfs: false
 
-      - name: Enable FUSE Passthrough
-        if: ${{ github.event.inputs.enable_fuse_passthrough == 'true' }}
+      - name: Enable FUSE
+        if: github.event.inputs.enable_fuse_passthrough == 'true'
         run: |
           CONFIG_FILE="arch/arm64/configs/vendor/sun_consolidate.config"
           if [ -f "$CONFIG_FILE" ]; then
             echo "CONFIG_FUSE_PASSTHROUGH=y" >> "$CONFIG_FILE"
           else
-            echo "Config file not found"
+            echo "Config not found"
             exit 1
           fi
 
-      - name: Set environment variables
+      - name: Set Env
         run: |
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
           echo "KERNEL_DIR=${{ github.workspace }}" >> $GITHUB_ENV
           echo "AK3_DIR=${{ github.workspace }}/anykernel3" >> $GITHUB_ENV
 
-      - name: Cache Proton Clang
+      - name: Cache Clang
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/proton-clang
-          key: proton-clang-r563880c
+          key: clang-r563880c-v1
 
-      - name: Download Proton Clang
-        if: ${{ steps.cache-clang.outputs.cache-hit != 'true' }}        run: |
-          CLANG_ROOT="${{ github.workspace }}/proton-clang"
-          mkdir -p "$CLANG_ROOT"
-          curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C "$CLANG_ROOT"
-          rm -f "$CLANG_ROOT/bin/ld" "$CLANG_ROOT/bin/ld.bfd" "$CLANG_ROOT/bin/ld.gold" 2>/dev/null || true
-          chmod +x "$CLANG_ROOT/bin/"* 2>/dev/null || true
+      - name: Download Clang
+        if: steps.cache-clang.outputs.cache-hit != 'true'        run: |
+          mkdir -p ${{ github.workspace }}/proton-clang
+          curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C ${{ github.workspace }}/proton-clang
+          rm -f ${{ github.workspace }}/proton-clang/bin/ld* 2>/dev/null || true
+          chmod +x ${{ github.workspace }}/proton-clang/bin/* 2>/dev/null || true
 
-      - name: Setup Clang path and verify
+      - name: Setup Clang
         run: |
           echo "CLANG_BIN_DIR=${{ github.workspace }}/proton-clang/bin" >> $GITHUB_ENV
-          "${{ github.workspace }}/proton-clang/bin/clang-21" --version
+          ${{ github.workspace }}/proton-clang/bin/clang-21 --version
 
-      - name: Install build dependencies
+      - name: Install Deps
         run: |
           sudo apt-get update
           sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
-      - name: Build kernel
+      - name: Build Kernel
         env:
           PATH: "${{ env.CLANG_BIN_DIR }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           CC: clang
@@ -82,60 +81,43 @@ jobs:
           cd ${{ env.KERNEL_DIR }}
           make clean || true
           make mrproper || true
-          
           rm -rf drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator/haptic_feedback
           mkdir -p drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator/haptic_feedback
-          
-          echo 'menuconfig KERNEL_FW_UPDATE' > drivers/base/kernelFwUpdate/Kconfig
-          echo '  bool "Kernel Firmware Update Support"' >> drivers/base/kernelFwUpdate/Kconfig
+          echo 'menuconfig DUMMY1' > drivers/base/kernelFwUpdate/Kconfig
+          echo '  bool "Dummy"' >> drivers/base/kernelFwUpdate/Kconfig
           echo '  default n' >> drivers/base/kernelFwUpdate/Kconfig
           touch drivers/base/kernelFwUpdate/Makefile
-          
-          echo 'menuconfig TOUCHPANEL_NOTIFY' > drivers/base/touchpanel_notify/Kconfig
-          echo '  bool "Touchpanel Notify Support"' >> drivers/base/touchpanel_notify/Kconfig
+          echo 'menuconfig DUMMY2' > drivers/base/touchpanel_notify/Kconfig
+          echo '  bool "Dummy"' >> drivers/base/touchpanel_notify/Kconfig
           echo '  default n' >> drivers/base/touchpanel_notify/Kconfig
           touch drivers/base/touchpanel_notify/Makefile
-          
-          echo 'menuconfig MAGTRANSFER' > drivers/base/magtransfer/Kconfig          echo '  bool "Magtransfer Support"' >> drivers/base/magtransfer/Kconfig
+          echo 'menuconfig DUMMY3' > drivers/base/magtransfer/Kconfig
+          echo '  bool "Dummy"' >> drivers/base/magtransfer/Kconfig
           echo '  default n' >> drivers/base/magtransfer/Kconfig
           touch drivers/base/magtransfer/Makefile
-          
-          echo 'menuconfig HAPTIC_FEEDBACK' > drivers/misc/vibrator/haptic_feedback/Kconfig
-          echo '  bool "Haptic Feedback Support"' >> drivers/misc/vibrator/haptic_feedback/Kconfig
-          echo '  default n' >> drivers/misc/vibrator/haptic_feedback/Kconfig
+          echo 'menuconfig DUMMY4' > drivers/misc/vibrator/haptic_feedback/Kconfig
+          echo '  bool "Dummy"' >> drivers/misc/vibrator/haptic_feedback/Kconfig          echo '  default n' >> drivers/misc/vibrator/haptic_feedback/Kconfig
           touch drivers/misc/vibrator/haptic_feedback/Makefile
-          
           make vendor/sun_consolidate.config
-          grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE config missing"; exit 1; }
-          
+          grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE missing"; exit 1; }
           make -j$(nproc) Image.gz dtbs
           ls -lh arch/arm64/boot/Image.gz
 
-      - name: Prepare AnyKernel3
+      - name: Prepare AK3
         run: |
-          if [ ! -d "${{ env.AK3_DIR }}/tools" ]; then
-            echo "AnyKernel3 incomplete"
-            exit 1
-          fi
+          test -d "${{ env.AK3_DIR }}/tools" || { echo "AK3 incomplete"; exit 1; }
           cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz ${{ env.AK3_DIR }}/Image.gz
           mkdir -p ${{ env.AK3_DIR }}/dtb
-          DTB_PATH="${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor/qcom"
-          if [ -d "$DTB_PATH" ]; then
-            find "$DTB_PATH" -name "*.dtb" -exec cp {} ${{ env.AK3_DIR }}/dtb/ \;
-          else
-            find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/ -name "*.dtb" -maxdepth 3 -exec cp {} ${{ env.AK3_DIR }}/dtb/ \; || true
-          fi
-          if [ -f "${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img" ]; then
-            cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img ${{ env.AK3_DIR }}/dtbo.img
-          fi
+          find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor/qcom/ -name "*.dtb" -exec cp {} ${{ env.AK3_DIR }}/dtb/ \; 2>/dev/null || true
+          find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/ -name "*.dtb" -maxdepth 3 -exec cp {} ${{ env.AK3_DIR }}/dtb/ \; 2>/dev/null || true
+          test -f "${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img" && cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img ${{ env.AK3_DIR }}/dtbo.img || true
 
-      - name: Create AnyKernel3 zip
+      - name: Package AK3
         run: |
           cd ${{ env.AK3_DIR }}
-          zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" -x "*.md" -x "LICENSE" -x "README*" -x "*.sh~"
-          ls -lh ../AnyKernel3-OP5D0DL1.zip
+          zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" "*.md" "LICENSE" "README*" "*.sh~"
 
-      - name: Upload artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: AnyKernel3-OP5D0DL1
