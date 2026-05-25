@@ -73,54 +73,30 @@ jobs:
                    drivers/power/oplus
 
           # kernelFwUpdate
-          cat > drivers/base/kernelFwUpdate/Kconfig << 'ENDOFFILE'
-menuconfig DUMMY_KFW
-	bool "Dummy for kernelFwUpdate"
-	default n
-ENDOFFILE
+          printf 'menuconfig DUMMY_KFW\n\tbool "Dummy for kernelFwUpdate"\n\tdefault n\n' > drivers/base/kernelFwUpdate/Kconfig
           touch drivers/base/kernelFwUpdate/Makefile
 
           # touchpanel_notify
-          cat > drivers/base/touchpanel_notify/Kconfig << 'ENDOFFILE'
-menuconfig DUMMY_TPN
-	bool "Dummy for touchpanel_notify"
-	default n
-ENDOFFILE
+          printf 'menuconfig DUMMY_TPN\n\tbool "Dummy for touchpanel_notify"\n\tdefault n\n' > drivers/base/touchpanel_notify/Kconfig
           touch drivers/base/touchpanel_notify/Makefile
 
           # magtransfer
-          cat > drivers/base/magtransfer/Kconfig << 'ENDOFFILE'
-menuconfig DUMMY_MGT
-	bool "Dummy for magtransfer"
-	default n
-ENDOFFILE
+          printf 'menuconfig DUMMY_MGT\n\tbool "Dummy for magtransfer"\n\tdefault n\n' > drivers/base/magtransfer/Kconfig
           touch drivers/base/magtransfer/Makefile
 
-          # oplus_haptic          cat > drivers/misc/vibrator/oplus_haptic/Kconfig << 'ENDOFFILE'
-menuconfig DUMMY_OPLUS_HAPTIC
-	bool "Dummy for oplus_haptic"
-	default n
-ENDOFFILE
+          # oplus_haptic
+          printf 'menuconfig DUMMY_OPLUS_HAPTIC\n\tbool "Dummy for oplus_haptic"\n\tdefault n\n' > drivers/misc/vibrator/oplus_haptic/Kconfig
           touch drivers/misc/vibrator/oplus_haptic/Makefile
 
           # haptic_feedback
-          cat > drivers/misc/vibrator/haptic_feedback/Kconfig << 'ENDOFFILE'
-menuconfig DUMMY_HAP
-	bool "Dummy for haptic_feedback"
-	default n
-ENDOFFILE
+          printf 'menuconfig DUMMY_HAP\n\tbool "Dummy for haptic_feedback"\n\tdefault n\n' > drivers/misc/vibrator/haptic_feedback/Kconfig
           touch drivers/misc/vibrator/haptic_feedback/Makefile
 
           # oplus power
-          cat > drivers/power/oplus/Kconfig << 'ENDOFFILE'
-menuconfig DUMMY_OPLUS_POWER
-	bool "Dummy for oplus power"
-	default n
-ENDOFFILE
+          printf 'menuconfig DUMMY_OPLUS_POWER\n\tbool "Dummy for oplus power"\n\tdefault n\n' > drivers/power/oplus/Kconfig
           touch drivers/power/oplus/Makefile
 
-      - name: Enable FUSE Passthrough (Config Modification)
-        if: ${{ inputs.enable_fuse_passthrough == true }}
+      - name: Enable FUSE Passthrough (Config Modification)        if: ${{ inputs.enable_fuse_passthrough == true }}
         run: |
           CONFIG_FILE="arch/arm64/configs/vendor/sun_consolidate.config"
           if [ -f "$CONFIG_FILE" ]; then
@@ -145,7 +121,8 @@ ENDOFFILE
           make vendor/sun_consolidate.config
 
           # 如果启用了 FUSE，检查配置是否生效
-          if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then            grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE missing in .config"; exit 1; }
+          if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
+            grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE missing in .config"; exit 1; }
           fi
 
           # 使用 LLVM=1 编译内核
@@ -168,8 +145,7 @@ ENDOFFILE
           zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" "*.md" "LICENSE" "README*" "*.sh~"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
+        uses: actions/upload-artifact@v4        with:
           name: AnyKernel3-OP5D0DL1
           path: AnyKernel3-OP5D0DL1.zip
           retention-days: 7
