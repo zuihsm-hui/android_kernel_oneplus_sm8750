@@ -1,4 +1,4 @@
-name: Build OnePlus 13 Kernel with FUSE Passthrough
+name: Build OnePlus 13 Kernel with FUSE Passthrough & AnyKernel3
 
 on:
   workflow_dispatch:
@@ -11,25 +11,77 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    
     steps:
       - name: 检出内核源码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 开启 FUSE Passthrough (可选)
         if: ${{ github.event.inputs.enable_fuse_passthrough == 'true' }}
         run: |
           echo "CONFIG_FUSE_PASSTHROUGH=y" >> arch/arm64/configs/vendor/sun_consolidate.config
+          echo "已启用 CONFIG_FUSE_PASSTHROUGH"
+
+      - name: 设置环境变量
+        run: |
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "SUBARCH=arm64" >> $GITHUB_ENV
+          echo "CLANG_DIR=${{ github.workspace }}/proton-clang" >> $GITHUB_ENV
+          echo "AK3_DIR=${{ github.workspace }}/anykernel3" >> $GITHUB_ENV
+
+      - name: 下载 Proton Clang
+        run: |
+          mkdir -p ${{ env.CLANG_DIR }}
+          curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C ${{ env.CLANG_DIR }} --strip-components=1
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
       - name: 编译内核
-        uses: dabao1955/kernel_build_action@main
+        env:
+          PATH: "${{ env.CLANG_DIR }}/bin:${{ github.workspace }}/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          CC: clang
+          LD: ld.lld
+          AR: llvm-ar
+          NM: llvm-nm
+          STRIP: llvm-strip
+          OBJCOPY: llvm-objcopy
+          HOSTCC: clang
+          HOSTCXX: clang++
+          KCFLAGS: "-Wno-error=unused-but-set-variable -Wno-error=unused-function -Wno-error=deprecated-declarations"
+        run: |
+          make clean || true
+          make mrproper || true
+          make sun_consolidate.config
+          grep CONFIG_FUSE_PASSTHROUGH .config # 验证配置
+          make -j$(nproc) Image.gz dtbs
+          echo "编译完成！"
+
+      - name: 准备 AnyKernel3 打包
+        run: |
+          # 复制内核镜像到 AnyKernel3 目录
+          cp arch/arm64/boot/Image.gz ${{ env.AK3_DIR }}/Image.gz
+          
+          # 复制 DTB 文件 (根据实际路径调整，通常是 vendor/qcom 或 qcom)
+          # 注意：OnePlus SM8750 可能需要将所有 dtb 合并或单独放置，请参考 AnyKernel3 文档
+          find arch/arm64/boot/dts/vendor/qcom/ -name "*.dtb" -exec cp {} ${{ env.AK3_DIR }}/dtb \;
+          
+          # 如果 AnyKernel3 需要特定的 dtbo.img，也需要复制
+          # cp arch/arm64/boot/dtbo.img ${{ env.AK3_DIR }}/dtbo.img || true
+
+      - name: 打包 AnyKernel3.zip
+        run: |
+          cd ${{ env.AK3_DIR }}
+          zip -r9 ../AnyKernel3.zip * -x .git* -x *.md
+          cd ..
+          echo "打包完成！"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
         with:
-          # 关键：设置为 '.' 表示使用当前工作目录下的源码
-          kernel-dir: .
-          # 关键：不设置 kernel-url，或者设为空，避免触发克隆逻辑
-          # 如果必须设，有些 Action 要求 kernel-url 和 kernel-dir 同时存在时才跳过克隆
-          # 但根据报错，最好完全移除 kernel-url 和 kernel-branch
-          config: sun_consolidate.config
-          arch: arm64
-          other-clang-url: "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz"
-          # 如需 KernelSU 则取消下一行注释
-          # ksu: true
+          name: AnyKernel3-Zip
+          path: AnyKernel3.zip
