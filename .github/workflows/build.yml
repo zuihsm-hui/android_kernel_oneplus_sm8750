@@ -36,7 +36,7 @@ jobs:
           key: proton-clang-r563880c
 
       - name: Download Clang
-        if: ${{ steps.cache-clang.outputs.cache-hit != 'true' }}
+        if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           CLANG_DIR="${{ github.workspace }}/proton-clang"
           mkdir -p "$CLANG_DIR"
@@ -56,47 +56,23 @@ jobs:
       - name: Prepare Dummy Drivers
         run: |
           cd ${{ env.KERNEL_DIR }}
-          
-          # Remove conflicting directories
-          rm -rf drivers/base/kernelFwUpdate \
-                 drivers/base/touchpanel_notify \
-                 drivers/base/magtransfer \
-                 drivers/misc/vibrator \
-                 drivers/power/oplus
-
-          # Create dummy directory structure
-          mkdir -p drivers/base/kernelFwUpdate \
-                   drivers/base/touchpanel_notify \
-                   drivers/base/magtransfer \
-                   drivers/misc/vibrator/oplus_haptic \
-                   drivers/misc/vibrator/haptic_feedback \
-                   drivers/power/oplus
-
-          # Create Kconfig and Makefile for kernelFwUpdate
+          rm -rf drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator drivers/power/oplus
+          mkdir -p drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator/oplus_haptic drivers/misc/vibrator/haptic_feedback drivers/power/oplus
           printf 'menuconfig DUMMY_KFW\n\tbool "Dummy for kernelFwUpdate"\n\tdefault n\n' > drivers/base/kernelFwUpdate/Kconfig
           touch drivers/base/kernelFwUpdate/Makefile
-
-          # Create Kconfig and Makefile for touchpanel_notify
           printf 'menuconfig DUMMY_TPN\n\tbool "Dummy for touchpanel_notify"\n\tdefault n\n' > drivers/base/touchpanel_notify/Kconfig
           touch drivers/base/touchpanel_notify/Makefile
-
-          # Create Kconfig and Makefile for magtransfer
           printf 'menuconfig DUMMY_MGT\n\tbool "Dummy for magtransfer"\n\tdefault n\n' > drivers/base/magtransfer/Kconfig
           touch drivers/base/magtransfer/Makefile
-
-          # Create Kconfig and Makefile for oplus_haptic
           printf 'menuconfig DUMMY_OPLUS_HAPTIC\n\tbool "Dummy for oplus_haptic"\n\tdefault n\n' > drivers/misc/vibrator/oplus_haptic/Kconfig
           touch drivers/misc/vibrator/oplus_haptic/Makefile
-
-          # Create Kconfig and Makefile for haptic_feedback
           printf 'menuconfig DUMMY_HAP\n\tbool "Dummy for haptic_feedback"\n\tdefault n\n' > drivers/misc/vibrator/haptic_feedback/Kconfig
           touch drivers/misc/vibrator/haptic_feedback/Makefile
-
-          # Create Kconfig and Makefile for oplus power
           printf 'menuconfig DUMMY_OPLUS_POWER\n\tbool "Dummy for oplus power"\n\tdefault n\n' > drivers/power/oplus/Kconfig
           touch drivers/power/oplus/Makefile
 
-      - name: Enable FUSE Passthrough (Config Modification)        if: ${{ inputs.enable_fuse_passthrough == true }}  # <--- 这里已换行！
+      - name: Enable FUSE Passthrough (Config Modification)
+        if: inputs.enable_fuse_passthrough
         run: |
           CONFIG_FILE="arch/arm64/configs/vendor/sun_consolidate.config"
           if [ -f "$CONFIG_FILE" ]; then
@@ -112,24 +88,14 @@ jobs:
           PATH: "${{ env.CLANG_BIN_DIR }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         run: |
           cd ${{ env.KERNEL_DIR }}
-
-          # Clean old build artifacts
           make clean || true
           make mrproper || true
-
-          # Load vendor config
           make vendor/sun_consolidate.config
-
-          # Check if FUSE is enabled if requested
           if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
             grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE missing in .config"; exit 1; }
           fi
-
-          # Build kernel with LLVM
           make LLVM=1 -j$(nproc) Image.gz dtbs
-
           ls -lh arch/arm64/boot/Image.gz
-
       - name: Prepare AnyKernel3
         run: |
           test -d "${{ env.AK3_DIR }}/tools" || { echo "AK3 incomplete"; exit 1; }
@@ -145,7 +111,8 @@ jobs:
           zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" "*.md" "LICENSE" "README*" "*.sh~"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4        with:                                        # <--- 这里已换行！
+        uses: actions/upload-artifact@v4
+        with:
           name: AnyKernel3-OP5D0DL1
           path: AnyKernel3-OP5D0DL1.zip
           retention-days: 7
