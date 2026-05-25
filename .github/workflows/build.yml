@@ -54,33 +54,39 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
-      - name: Auto-fix Missing Kconfig & Disable Missing Makefile Targets
+      - name: Disable Missing Drivers (Comment out stale references)
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          echo "=== 1. 为缺失的 Kconfig 文件创建占位（空文件） ==="
+          echo "=== 1. 注释缺失的 Kconfig source 引用 ==="
           find . -name "Kconfig" -type f | while read f; do
+            cp "$f" "$f.bak"
             while IFS= read -r line; do
-              if echo "$line" | grep -qE '^\s*source\s+"([^"]*)"'; then
+              # 匹配以 source "..." 开头的行（允许行尾有注释或空格）
+              if echo "$line" | grep -qE '^\s*source\s+"[^"]*"'; then
                 src=$(echo "$line" | sed -E 's/^\s*source\s+"([^"]*)".*/\1/')
                 if [ ! -f "$src" ]; then
-                  parent=$(dirname "$src")
-                  # 清理不可见字符
-                  parent=$(printf '%s' "$parent")
-                  # 尝试删除可能存在的同名文件（对目录无影响），然后创建目录
-                  rm -f "$parent"
-                  mkdir -p "$parent"
-                  echo "# placeholder" > "$src"
-                  echo "  Created placeholder Kconfig: $src"
+                  echo "# [DISABLED] $line  (missing: $src)" >> "$f.new"
+                else
+                  echo "$line" >> "$f.new"
                 fi
+              else
+                echo "$line" >> "$f.new"
               fi
-            done < "$f"
+            done < "$f.bak"
+            # 如果源文件是空的，循环不会生成 .new，需要补一个空文件
+            if [ ! -f "$f.new" ]; then
+              touch "$f.new"
+            fi
+            mv "$f.new" "$f"
+            rm "$f.bak"
           done
 
           echo "=== 2. 注释缺失的 Makefile obj- 目录引用 ==="
           find . -name "Makefile" -type f | while read f; do
             cp "$f" "$f.bak"
             while IFS= read -r line; do
+              # 匹配 obj-... += xxx/ 的行
               if echo "$line" | grep -qE '^\s*obj-\w+\s*[+:]=\s*.*\/'; then
                 dir_entry=$(echo "$line" | sed -E 's/^.*[+:]=\s*(.*)\/.*$/\1/' | xargs)
                 if [ -n "$dir_entry" ] && [ ! -f "$dir_entry/Makefile" ]; then
@@ -99,7 +105,7 @@ jobs:
             rm "$f.bak"
           done
 
-          echo "=== 全部修复完成 ==="
+          echo "=== 缺失引用全部注释完毕 ==="
 
       - name: Enable FUSE Passthrough (Config Modification)
         if: inputs.enable_fuse_passthrough
