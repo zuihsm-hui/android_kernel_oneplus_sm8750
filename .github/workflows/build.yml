@@ -72,12 +72,9 @@ jobs:
           KCFLAGS: "-Wno-error=unused-but-set-variable -Wno-error=unused-function -Wno-error=deprecated-declarations"
         run: |
           cd ${{ env.KERNEL_DIR }}
-          echo "🧹 清理旧构建..."
-          make clean || true
-          make mrproper || true
           
-          # 🔑 修复缺失的 Kconfig 依赖
-          echo "🔧 修复 drivers/base/Kconfig 缺失引用..."
+          # 🔑 关键：必须在 make clean 之前创建占位文件，否则清理阶段会直接崩溃
+          echo "🔧 修复 drivers/base/kernelFwUpdate 缺失引用..."
           mkdir -p drivers/base/kernelFwUpdate
           cat > drivers/base/kernelFwUpdate/Kconfig << 'EOF'
           menuconfig KERNEL_FW_UPDATE
@@ -86,7 +83,12 @@ jobs:
             help
               Placeholder for missing vendor Kconfig.
           EOF
-          echo "✅ 占位 Kconfig 已创建"
+          touch drivers/base/kernelFwUpdate/Makefile
+          echo "✅ 占位 Kconfig & Makefile 已创建"
+          
+          echo "🧹 清理旧构建..."
+          make clean || true
+          make mrproper || true
           
           echo "⚙️ 加载配置: vendor/sun_consolidate.config"
           make vendor/sun_consolidate.config
@@ -94,9 +96,9 @@ jobs:
           echo "🔎 验证 FUSE Passthrough 配置..."
           if grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config; then
             echo "✅ CONFIG_FUSE_PASSTHROUGH 已启用"
-          else
-            echo "❌ CONFIG_FUSE_PASSTHROUGH 未找到"
-            exit 1          fi
+          else            echo "❌ CONFIG_FUSE_PASSTHROUGH 未找到"
+            exit 1
+          fi
           
           echo "🚀 开始编译 (使用 $(nproc) 线程)..."
           make -j$(nproc) Image.gz dtbs
@@ -143,7 +145,7 @@ jobs:
           path: AnyKernel3-OP5D0DL1.zip
           retention-days: 7
 
-      - name: 构建完成通知
-        run: |
-          echo "🎉 构建成功!"          echo "📥 下载链接: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: 构建完成通知        run: |
+          echo "🎉 构建成功!"
+          echo "📥 下载链接: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "📱 刷机前请务必备份原厂 boot.img"
