@@ -47,7 +47,8 @@ jobs:
       - name: Verify Clang
         run: |
           echo "CLANG_BIN_DIR=${{ github.workspace }}/proton-clang/bin" >> $GITHUB_ENV
-          "${{ github.workspace }}/proton-clang/bin/clang-21" --version
+          "${{ github.workspace }}/proton-clang/bin/clang" --version
+
       - name: Install Dependencies
         run: |
           sudo apt-get update
@@ -96,7 +97,12 @@ jobs:
             exit 1
           fi
 
-      - name: Build Kernel        env:
+      - name: Clone AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git ${{ env.AK3_DIR }}
+
+      - name: Build Kernel
+        env:
           PATH: "${{ env.CLANG_BIN_DIR }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         run: |
           cd ${{ env.KERNEL_DIR }}
