@@ -71,63 +71,84 @@ jobs:
         run: |
           cd ${{ env.KERNEL_DIR }}
 
-          # 1. 彻底删除可能引起冲突的目录（包括文件类型的 vibrator）
+          # 删除所有已知的可能引起冲突的目录（包括文件）
           rm -rf drivers/base/kernelFwUpdate \
                  drivers/base/touchpanel_notify \
                  drivers/base/magtransfer \
-                 drivers/misc/vibrator
+                 drivers/misc/vibrator \
+                 drivers/power/oplus
 
-          # 2. 创建完整的 dummy 目录结构（包含 oplus_haptic 和 haptic_feedback）
+          # 创建 dummy 目录结构
           mkdir -p drivers/base/kernelFwUpdate \
                    drivers/base/touchpanel_notify \
                    drivers/base/magtransfer \
                    drivers/misc/vibrator/oplus_haptic \
-                   drivers/misc/vibrator/haptic_feedback
+                   drivers/misc/vibrator/haptic_feedback \
+                   drivers/power/oplus
 
-          # 3. 创建 dummy Kconfig 和 Makefile 文件
+          # 为每个目录创建 dummy Kconfig 和 Makefile
+
           # kernelFwUpdate
-          echo 'menuconfig DUMMY_KFW' > drivers/base/kernelFwUpdate/Kconfig
-          echo '  bool "Dummy"' >> drivers/base/kernelFwUpdate/Kconfig
-          echo '  default n' >> drivers/base/kernelFwUpdate/Kconfig
+          cat > drivers/base/kernelFwUpdate/Kconfig << 'EOF'
+menuconfig DUMMY_KFW
+	bool "Dummy for kernelFwUpdate"
+	default n
+EOF
           touch drivers/base/kernelFwUpdate/Makefile
 
           # touchpanel_notify
-          echo 'menuconfig DUMMY_TPN' > drivers/base/touchpanel_notify/Kconfig
-          echo '  bool "Dummy"' >> drivers/base/touchpanel_notify/Kconfig
-          echo '  default n' >> drivers/base/touchpanel_notify/Kconfig
+          cat > drivers/base/touchpanel_notify/Kconfig << 'EOF'
+menuconfig DUMMY_TPN
+	bool "Dummy for touchpanel_notify"
+	default n
+EOF
           touch drivers/base/touchpanel_notify/Makefile
 
           # magtransfer
-          echo 'menuconfig DUMMY_MGT' > drivers/base/magtransfer/Kconfig
-          echo '  bool "Dummy"' >> drivers/base/magtransfer/Kconfig
-          echo '  default n' >> drivers/base/magtransfer/Kconfig
+          cat > drivers/base/magtransfer/Kconfig << 'EOF'
+menuconfig DUMMY_MGT
+	bool "Dummy for magtransfer"
+	default n
+EOF
           touch drivers/base/magtransfer/Makefile
 
-          # oplus_haptic (新增，解决 Kconfig 依赖)
-          echo 'menuconfig DUMMY_OPLUS_HAPTIC' > drivers/misc/vibrator/oplus_haptic/Kconfig
-          echo '  bool "Dummy for oplus_haptic"' >> drivers/misc/vibrator/oplus_haptic/Kconfig
-          echo '  default n' >> drivers/misc/vibrator/oplus_haptic/Kconfig
+          # oplus_haptic
+          cat > drivers/misc/vibrator/oplus_haptic/Kconfig << 'EOF'
+menuconfig DUMMY_OPLUS_HAPTIC
+	bool "Dummy for oplus_haptic"
+	default n
+EOF
           touch drivers/misc/vibrator/oplus_haptic/Makefile
 
           # haptic_feedback
-          echo 'menuconfig DUMMY_HAP' > drivers/misc/vibrator/haptic_feedback/Kconfig
-          echo '  bool "Dummy"' >> drivers/misc/vibrator/haptic_feedback/Kconfig
-          echo '  default n' >> drivers/misc/vibrator/haptic_feedback/Kconfig
+          cat > drivers/misc/vibrator/haptic_feedback/Kconfig << 'EOF'
+menuconfig DUMMY_HAP
+	bool "Dummy for haptic_feedback"
+	default n
+EOF
           touch drivers/misc/vibrator/haptic_feedback/Makefile
 
-          # 4. 执行清理（现在所有需要的 Makefile 都已存在）
+          # oplus power
+          cat > drivers/power/oplus/Kconfig << 'EOF'
+menuconfig DUMMY_OPLUS_POWER
+	bool "Dummy for oplus power"
+	default n
+EOF
+          touch drivers/power/oplus/Makefile
+
+          # 执行清理（现在所有 Makefile 均存在）
           make clean || true
           make mrproper || true
 
-          # 5. 加载 vendor 配置（此时 Kconfig 依赖已满足）
+          # 加载 vendor 配置
           make vendor/sun_consolidate.config
 
-          # 6. 如果启用了 FUSE，检查配置是否生效
+          # 如果启用了 FUSE，检查配置是否生效
           if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
             grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE missing"; exit 1; }
           fi
 
-          # 7. 使用 LLVM=1 编译内核
+          # 使用 LLVM=1 编译内核
           make LLVM=1 -j$(nproc) Image.gz dtbs
 
           ls -lh arch/arm64/boot/Image.gz
