@@ -73,6 +73,7 @@ jobs:
         run: |
           cd ${{ env.KERNEL_DIR }}
           echo "🔧 修复 drivers/base/kernelFwUpdate 缺失引用..."
+          rm -rf drivers/base/kernelFwUpdate
           mkdir -p drivers/base/kernelFwUpdate
           printf "menuconfig KERNEL_FW_UPDATE\n  bool \"Kernel Firmware Update Support\"\n  default n\n  help\n    Placeholder for missing vendor Kconfig.\n" > drivers/base/kernelFwUpdate/Kconfig
           touch drivers/base/kernelFwUpdate/Makefile
@@ -95,8 +96,8 @@ jobs:
           ls -lh arch/arm64/boot/Image.gz
 
       - name: 准备 AnyKernel3 打包
-        run: |
-          if [ ! -d "${{ env.AK3_DIR }}/tools" ]; then            echo "❌ 错误: anykernel3 目录不完整!"
+        run: |          if [ ! -d "${{ env.AK3_DIR }}/tools" ]; then
+            echo "❌ 错误: anykernel3 目录不完整!"
             ls -la "${{ env.AK3_DIR }}/" 2>/dev/null || echo "目录不存在"
             exit 1
           fi
