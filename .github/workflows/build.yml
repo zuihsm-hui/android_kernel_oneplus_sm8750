@@ -97,11 +97,9 @@ jobs:
                 fi
               done < Makefile.bak
             )
-            # 子 shell 产生的 .new 文件在 $dir 下
             if [ -f "$dir/Makefile.new" ]; then
               mv "$dir/Makefile.new" "$f"
             else
-              # 若文件为空循环未执行则手动创建
               touch "$dir/Makefile.new"
               mv "$dir/Makefile.new" "$f"
             fi
@@ -109,19 +107,6 @@ jobs:
           done
 
           echo "=== 缺失引用全部注释完毕 ==="
-
-      - name: Enable FUSE Passthrough (Config Modification)
-        if: inputs.enable_fuse_passthrough
-        run: |
-          CONFIG_FILE="arch/arm64/configs/vendor/sun_consolidate.config"
-          if [ -f "$CONFIG_FILE" ]; then
-            echo "CONFIG_FUSE_FS=y" >> "$CONFIG_FILE"
-            echo "CONFIG_FUSE_PASSTHROUGH=y" >> "$CONFIG_FILE"
-            echo "FUSE Passthrough (and FUSE_FS) enabled in config"
-          else
-            echo "Error: $CONFIG_FILE not found"
-            exit 1
-          fi
 
       - name: Build Kernel
         env:
@@ -131,12 +116,17 @@ jobs:
           make clean || true
           make mrproper || true
           make vendor/sun_consolidate.config
+
           if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
-            scripts/config --enable CONFIG_FUSE_FS
-            scripts/config --enable CONFIG_FUSE_PASSTHROUGH
+            # 直接写入 .config 确保 FUSE 选项存在，再用 olddefconfig 补全依赖
+            echo "CONFIG_FUSE_FS=y" >> .config
+            echo "CONFIG_FUSE_PASSTHROUGH=y" >> .config
             make olddefconfig
+            echo "=== Checking FUSE config ==="
+            grep -E "CONFIG_FUSE" .config || true
             grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE missing in .config"; exit 1; }
           fi
+
           make LLVM=1 -j$(nproc) Image.gz dtbs
           ls -lh arch/arm64/boot/Image.gz
 
