@@ -47,8 +47,7 @@ jobs:
       - name: 下载并配置 Proton Clang
         run: |
           CLANG_ROOT="${{ github.workspace }}/proton-clang"
-          mkdir -p "$CLANG_ROOT"          
-          echo "📥 下载 Proton Clang r563880c..."
+          mkdir -p "$CLANG_ROOT"                    echo "📥 下载 Proton Clang r563880c..."
           curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C "$CLANG_ROOT"
           
           # 记录 bin 目录路径供后续步骤使用
@@ -96,8 +95,8 @@ jobs:
           make clean || true
           make mrproper || true
           
-          echo "⚙️ 加载配置: sun_consolidate.config"          make sun_consolidate.config
-          
+          echo "⚙️ 加载配置: sun_consolidate.config"
+          make sun_consolidate.config          
           echo "🔎 验证 FUSE Passthrough 配置..."
           if grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config; then
             echo "✅ CONFIG_FUSE_PASSTHROUGH 已启用"
@@ -145,8 +144,8 @@ jobs:
 
       # 8️⃣ 打包 AnyKernel3.zip
       - name: 打包 AnyKernel3.zip
-        run: |          cd ${{ env.AK3_DIR }}
-          zip -r9 ../AnyKernel3-OP5D0DL1.zip * \
+        run: |
+          cd ${{ env.AK3_DIR }}          zip -r9 ../AnyKernel3-OP5D0DL1.zip * \
             -x ".git*" -x "*.md" -x "LICENSE" -x "README*" -x "*.sh~"
           cd ..
           echo "✅ 打包完成: $(ls -lh AnyKernel3-OP5D0DL1.zip)"
