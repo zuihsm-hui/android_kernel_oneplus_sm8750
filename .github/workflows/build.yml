@@ -28,6 +28,7 @@ jobs:
           config: sun_consolidate.config
           arch: arm64
           aosp-clang: true
+          aosp-gcc: true            # 新增：配合 AOSP Clang 使用的 GCC 工具链
           android-version: 16
           # 如果需要集成 KernelSU，取消下面一行的注释
           # ksu: true
