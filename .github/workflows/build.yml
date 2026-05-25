@@ -48,6 +48,7 @@ jobs:
         run: |
           echo "CLANG_BIN_DIR=${{ github.workspace }}/proton-clang/bin" >> $GITHUB_ENV
           "${{ github.workspace }}/proton-clang/bin/clang-21" --version
+
       - name: Install Dependencies
         run: |
           sudo apt-get update
@@ -96,7 +97,8 @@ jobs:
       - name: Build Kernel
         env:
           PATH: "${{ env.CLANG_BIN_DIR }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        run: |          cd ${{ env.KERNEL_DIR }}
+        run: |
+          cd ${{ env.KERNEL_DIR }}
           make clean || true
           make mrproper || true
           make vendor/sun_consolidate.config
