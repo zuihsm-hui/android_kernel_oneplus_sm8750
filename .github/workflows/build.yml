@@ -64,7 +64,12 @@ jobs:
               if echo "$line" | grep -qE '^\s*source\s+"([^"]*)"'; then
                 src=$(echo "$line" | sed -E 's/^\s*source\s+"([^"]*)".*/\1/')
                 if [ ! -f "$src" ]; then
-                  mkdir -p "$(dirname "$src")"
+                  parent=$(dirname "$src")
+                  # 如果父路径存在但不是目录（可能是之前误创建的同名文件），则删除
+                  if [ -e "$parent" ] && [ ! -d "$parent" ]; then
+                    rm -f "$parent"
+                  fi
+                  mkdir -p "$parent"
                   echo "# placeholder" > "$src"
                   echo "  Created placeholder Kconfig: $src"
                 fi
