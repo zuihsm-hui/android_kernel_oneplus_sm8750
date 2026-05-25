@@ -21,7 +21,7 @@ jobs:
           echo "CONFIG_FUSE_PASSTHROUGH=y" >> arch/arm64/configs/vendor/sun_consolidate.config
 
       - name: 编译内核
-        uses: dabao1955/kernel_build_action@v1.2
+        uses: dabao1955/kernel_build_action@main
         with:
           kernel-url: https://github.com/${{ github.repository }}
           kernel-branch: ${{ github.ref_name }}
