@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       enable_fuse_passthrough:
-        description: '启用 FUSE Passthrough 直通'
+        description: 'Enable FUSE Passthrough'
         type: boolean
         default: true
 
@@ -15,60 +15,56 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - name: 检出本地仓库
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           lfs: false
 
-      - name: 开启 FUSE Passthrough
+      - name: Enable FUSE Passthrough
         if: ${{ github.event.inputs.enable_fuse_passthrough == 'true' }}
         run: |
           CONFIG_FILE="arch/arm64/configs/vendor/sun_consolidate.config"
           if [ -f "$CONFIG_FILE" ]; then
             echo "CONFIG_FUSE_PASSTHROUGH=y" >> "$CONFIG_FILE"
-            echo "已启用 CONFIG_FUSE_PASSTHROUGH"
           else
-            echo "配置文件未找到: $CONFIG_FILE"
+            echo "Config file not found"
             exit 1
           fi
 
-      - name: 设置环境变量
+      - name: Set environment variables
         run: |
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
           echo "KERNEL_DIR=${{ github.workspace }}" >> $GITHUB_ENV
           echo "AK3_DIR=${{ github.workspace }}/anykernel3" >> $GITHUB_ENV
 
-      - name: 缓存 Proton Clang 工具链
+      - name: Cache Proton Clang
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/proton-clang
           key: proton-clang-r563880c
 
-      - name: 下载 Proton Clang        if: "steps.cache-clang.outputs.cache-hit != 'true'"
-        run: |
+      - name: Download Proton Clang
+        if: ${{ steps.cache-clang.outputs.cache-hit != 'true' }}        run: |
           CLANG_ROOT="${{ github.workspace }}/proton-clang"
           mkdir -p "$CLANG_ROOT"
-          echo "下载 Proton Clang r563880c..."
           curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C "$CLANG_ROOT"
           rm -f "$CLANG_ROOT/bin/ld" "$CLANG_ROOT/bin/ld.bfd" "$CLANG_ROOT/bin/ld.gold" 2>/dev/null || true
           chmod +x "$CLANG_ROOT/bin/"* 2>/dev/null || true
-          echo "下载与权限配置完成"
 
-      - name: 配置 Clang 环境变量与验证
+      - name: Setup Clang path and verify
         run: |
           echo "CLANG_BIN_DIR=${{ github.workspace }}/proton-clang/bin" >> $GITHUB_ENV
-          echo "验证 Clang 版本..."
           "${{ github.workspace }}/proton-clang/bin/clang-21" --version
 
-      - name: 安装编译依赖
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
-      - name: 编译内核
+      - name: Build kernel
         env:
           PATH: "${{ env.CLANG_BIN_DIR }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           CC: clang
@@ -84,83 +80,64 @@ jobs:
           KCFLAGS: "-Wno-error=unused-but-set-variable -Wno-error=unused-function -Wno-error=deprecated-declarations"
         run: |
           cd ${{ env.KERNEL_DIR }}
-          echo "清理旧构建..."
           make clean || true
           make mrproper || true
-          echo "修复缺失的 Kconfig 引用..."
+          
           rm -rf drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator/haptic_feedback
           mkdir -p drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator/haptic_feedback
+          
           echo 'menuconfig KERNEL_FW_UPDATE' > drivers/base/kernelFwUpdate/Kconfig
           echo '  bool "Kernel Firmware Update Support"' >> drivers/base/kernelFwUpdate/Kconfig
           echo '  default n' >> drivers/base/kernelFwUpdate/Kconfig
           touch drivers/base/kernelFwUpdate/Makefile
+          
           echo 'menuconfig TOUCHPANEL_NOTIFY' > drivers/base/touchpanel_notify/Kconfig
           echo '  bool "Touchpanel Notify Support"' >> drivers/base/touchpanel_notify/Kconfig
-          echo '  default n' >> drivers/base/touchpanel_notify/Kconfig          touch drivers/base/touchpanel_notify/Makefile
-          echo 'menuconfig MAGTRANSFER' > drivers/base/magtransfer/Kconfig
-          echo '  bool "Magtransfer Support"' >> drivers/base/magtransfer/Kconfig
+          echo '  default n' >> drivers/base/touchpanel_notify/Kconfig
+          touch drivers/base/touchpanel_notify/Makefile
+          
+          echo 'menuconfig MAGTRANSFER' > drivers/base/magtransfer/Kconfig          echo '  bool "Magtransfer Support"' >> drivers/base/magtransfer/Kconfig
           echo '  default n' >> drivers/base/magtransfer/Kconfig
           touch drivers/base/magtransfer/Makefile
+          
           echo 'menuconfig HAPTIC_FEEDBACK' > drivers/misc/vibrator/haptic_feedback/Kconfig
           echo '  bool "Haptic Feedback Support"' >> drivers/misc/vibrator/haptic_feedback/Kconfig
           echo '  default n' >> drivers/misc/vibrator/haptic_feedback/Kconfig
           touch drivers/misc/vibrator/haptic_feedback/Makefile
-          echo "占位文件已创建"
-          echo "加载配置: vendor/sun_consolidate.config"
+          
           make vendor/sun_consolidate.config
-          echo "验证 FUSE Passthrough 配置..."
-          if grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config; then
-            echo "CONFIG_FUSE_PASSTHROUGH 已启用"
-          else
-            echo "CONFIG_FUSE_PASSTHROUGH 未找到"
-            exit 1
-          fi
-          echo "开始编译 (使用 $(nproc) 线程)..."
+          grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "FUSE config missing"; exit 1; }
+          
           make -j$(nproc) Image.gz dtbs
-          echo "内核编译完成!"
           ls -lh arch/arm64/boot/Image.gz
 
-      - name: 准备 AnyKernel3 打包
+      - name: Prepare AnyKernel3
         run: |
           if [ ! -d "${{ env.AK3_DIR }}/tools" ]; then
-            echo "错误: anykernel3 目录不完整!"
-            ls -la "${{ env.AK3_DIR }}/" 2>/dev/null || echo "目录不存在"
+            echo "AnyKernel3 incomplete"
             exit 1
           fi
-          echo "复制 Image.gz..."
           cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz ${{ env.AK3_DIR }}/Image.gz
-          echo "复制 DTB 文件..."
           mkdir -p ${{ env.AK3_DIR }}/dtb
           DTB_PATH="${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor/qcom"
           if [ -d "$DTB_PATH" ]; then
             find "$DTB_PATH" -name "*.dtb" -exec cp {} ${{ env.AK3_DIR }}/dtb/ \;
-            echo "已复制 $(find ${{ env.AK3_DIR }}/dtb -name '*.dtb' | wc -l) 个 DTB 文件"
           else
-            echo "备用路径查找 DTB..."
             find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/ -name "*.dtb" -maxdepth 3 -exec cp {} ${{ env.AK3_DIR }}/dtb/ \; || true
           fi
           if [ -f "${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img" ]; then
             cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img ${{ env.AK3_DIR }}/dtbo.img
-            echo "已复制 dtbo.img"
           fi
-          echo "AnyKernel3 目录内容:"
-          ls -lh ${{ env.AK3_DIR }}/
-      - name: 打包 AnyKernel3.zip
+
+      - name: Create AnyKernel3 zip
         run: |
           cd ${{ env.AK3_DIR }}
           zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" -x "*.md" -x "LICENSE" -x "README*" -x "*.sh~"
-          cd ..
-          echo "打包完成: $(ls -lh AnyKernel3-OP5D0DL1.zip)"
+          ls -lh ../AnyKernel3-OP5D0DL1.zip
 
-      - name: 上传构建产物
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: AnyKernel3-OP5D0DL1
           path: AnyKernel3-OP5D0DL1.zip
           retention-days: 7
-
-      - name: 构建完成通知
-        run: |
-          echo "构建成功!"
-          echo "下载链接: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "刷机前请务必备份原厂 boot.img"
