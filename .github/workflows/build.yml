@@ -75,7 +75,11 @@ jobs:
           echo "🔧 修复 drivers/base/kernelFwUpdate 缺失引用..."
           rm -rf drivers/base/kernelFwUpdate
           mkdir -p drivers/base/kernelFwUpdate
-          printf "menuconfig KERNEL_FW_UPDATE\n  bool \"Kernel Firmware Update Support\"\n  default n\n  help\n    Placeholder for missing vendor Kconfig.\n" > drivers/base/kernelFwUpdate/Kconfig
+          echo 'menuconfig KERNEL_FW_UPDATE' > drivers/base/kernelFwUpdate/Kconfig
+          echo '  bool "Kernel Firmware Update Support"' >> drivers/base/kernelFwUpdate/Kconfig
+          echo '  default n' >> drivers/base/kernelFwUpdate/Kconfig
+          echo '  help' >> drivers/base/kernelFwUpdate/Kconfig
+          echo '    Placeholder for missing vendor Kconfig.' >> drivers/base/kernelFwUpdate/Kconfig
           touch drivers/base/kernelFwUpdate/Makefile
           echo "✅ 占位 Kconfig & Makefile 已创建"
           echo "🧹 清理旧构建..."
@@ -92,11 +96,11 @@ jobs:
           fi
           echo "🚀 开始编译 (使用 $(nproc) 线程)..."
           make -j$(nproc) Image.gz dtbs
-          echo "✅ 内核编译完成!"
-          ls -lh arch/arm64/boot/Image.gz
+          echo "✅ 内核编译完成!"          ls -lh arch/arm64/boot/Image.gz
 
       - name: 准备 AnyKernel3 打包
-        run: |          if [ ! -d "${{ env.AK3_DIR }}/tools" ]; then
+        run: |
+          if [ ! -d "${{ env.AK3_DIR }}/tools" ]; then
             echo "❌ 错误: anykernel3 目录不完整!"
             ls -la "${{ env.AK3_DIR }}/" 2>/dev/null || echo "目录不存在"
             exit 1
