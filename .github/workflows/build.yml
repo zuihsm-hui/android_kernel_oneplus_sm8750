@@ -23,8 +23,11 @@ jobs:
       - name: 编译内核
         uses: dabao1955/kernel_build_action@main
         with:
-          kernel-dir: .                      # 使用当前目录的源码
+          kernel-url: https://github.com/${{ github.repository }}
+          kernel-branch: ${{ github.ref_name }}
+          kernel-dir: .                          # 使用当前已检出的源码，而非重新克隆
           config: sun_consolidate.config
           arch: arm64
           other-clang-url: "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz"
-          # ksu: true                       # 如需集成 KernelSU 取消注释
+          # 如需 KernelSU 则取消下一行注释
+          # ksu: true
