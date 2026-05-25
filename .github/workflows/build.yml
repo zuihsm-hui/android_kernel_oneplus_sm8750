@@ -47,7 +47,8 @@ jobs:
           path: ${{ github.workspace }}/proton-clang
           key: proton-clang-r563880c
 
-      - name: 下载 Proton Clang        if: "steps.cache-clang.outputs.cache-hit != 'true'"
+      - name: 下载 Proton Clang
+        if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           CLANG_ROOT="${{ github.workspace }}/proton-clang"
           mkdir -p "$CLANG_ROOT"
@@ -96,7 +97,8 @@ jobs:
           touch drivers/base/kernelFwUpdate/Makefile
           echo 'menuconfig TOUCHPANEL_NOTIFY' > drivers/base/touchpanel_notify/Kconfig
           echo '  bool "Touchpanel Notify Support"' >> drivers/base/touchpanel_notify/Kconfig
-          echo '  default n' >> drivers/base/touchpanel_notify/Kconfig          touch drivers/base/touchpanel_notify/Makefile
+          echo '  default n' >> drivers/base/touchpanel_notify/Kconfig
+          touch drivers/base/touchpanel_notify/Makefile
           echo 'menuconfig MAGTRANSFER' > drivers/base/magtransfer/Kconfig
           echo '  bool "Magtransfer Support"' >> drivers/base/magtransfer/Kconfig
           echo '  default n' >> drivers/base/magtransfer/Kconfig
@@ -145,7 +147,8 @@ jobs:
       - name: 打包 AnyKernel3.zip
         run: |
           cd ${{ env.AK3_DIR }}
-          zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" -x "*.md" -x "LICENSE" -x "README*" -x "*.sh~"          cd ..
+          zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" -x "*.md" -x "LICENSE" -x "README*" -x "*.sh"
+          cd ..
           echo "打包完成: $(ls -lh AnyKernel3-OP5D0DL1.zip)"
 
       - name: 上传构建产物
