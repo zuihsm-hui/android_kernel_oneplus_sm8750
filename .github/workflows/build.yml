@@ -57,13 +57,14 @@ jobs:
       - name: Prepare Dummy Drivers
         run: |
           cd ${{ env.KERNEL_DIR }}
-          
+
+          # ---- 1. 清理不需要的 Oplus 专有驱动 ----
           rm -rf drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator drivers/power/oplus
           rm -rf drivers/soc/oplus/boot drivers/soc/oplus/multimedia
-          
+
           mkdir -p drivers/base/kernelFwUpdate drivers/base/touchpanel_notify drivers/base/magtransfer drivers/misc/vibrator/oplus_haptic drivers/misc/vibrator/haptic_feedback drivers/power/oplus
           mkdir -p drivers/soc/oplus/boot drivers/soc/oplus/multimedia
-          
+
           printf 'menuconfig DUMMY_KFW\n\tbool "Dummy for kernelFwUpdate"\n\tdefault n\n' > drivers/base/kernelFwUpdate/Kconfig
           touch drivers/base/kernelFwUpdate/Makefile
           printf 'menuconfig DUMMY_TPN\n\tbool "Dummy for touchpanel_notify"\n\tdefault n\n' > drivers/base/touchpanel_notify/Kconfig
@@ -81,6 +82,29 @@ jobs:
           printf 'menuconfig DUMMY_OPLUS_BOOT\n\tbool "Dummy for oplus boot"\n\tdefault n\n' > drivers/soc/oplus/boot/Kconfig
           touch drivers/soc/oplus/multimedia/Makefile
           printf 'menuconfig DUMMY_OPLUS_MULTIMEDIA\n\tbool "Dummy for oplus multimedia"\n\tdefault n\n' > drivers/soc/oplus/multimedia/Kconfig
+
+          # ---- 2. 自动扫描并补齐所有缺失的 Kconfig / Makefile ----
+          echo "=== 扫描缺失的 Kconfig 文件 ==="
+          grep -r --include=Kconfig -Po 'source "\K[^"]+' | while read f; do
+            if [ ! -f "$f" ]; then
+              mkdir -p "$(dirname "$f")"
+              echo "# dummy" > "$f"
+              echo "  → 创建缺失 Kconfig: $f"
+            fi
+          done
+
+          echo "=== 扫描缺失的 Makefile 目录 ==="
+          grep -r --include=Makefile -Po 'obj-[\w$\(\)]+\s*[+:]=?\s*\K\S+' | while read entry; do
+            if echo "$entry" | grep -q '/$'; then
+              dir="${entry%/}"
+              if [ ! -f "$dir/Makefile" ]; then
+                mkdir -p "$dir"
+                touch "$dir/Makefile"
+                echo "  → 创建缺失 Makefile: $dir/Makefile"
+              fi
+            fi
+          done
+          echo "=== 自动补齐完成 ==="
 
       - name: Enable FUSE Passthrough (Config Modification)
         if: inputs.enable_fuse_passthrough
