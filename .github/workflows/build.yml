@@ -43,23 +43,21 @@ jobs:
           echo "KERNEL_DIR=${{ github.workspace }}" >> $GITHUB_ENV
           echo "AK3_DIR=${{ github.workspace }}/anykernel3" >> $GITHUB_ENV
 
-      # 4️⃣ 🔑 修复：下载并配置 Proton Clang
+      # 4️⃣ 下载并配置 Proton Clang
       - name: 下载并配置 Proton Clang
         run: |
           CLANG_ROOT="${{ github.workspace }}/proton-clang"
           mkdir -p "$CLANG_ROOT"                    echo "📥 下载 Proton Clang r563880c..."
           curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C "$CLANG_ROOT"
           
-          # 记录 bin 目录路径供后续步骤使用
           echo "CLANG_BIN_DIR=$CLANG_ROOT/bin" >> $GITHUB_ENV
           
-          # 🔑 修复：bin/clang 是包装脚本，实际二进制为 clang-21
-          # 临时将 bin/ 加入 PATH 后验证，避免 wrapper 找不到 clang-21
+          # 验证 Clang（包装脚本依赖 PATH）
           export PATH="$CLANG_ROOT/bin:$PATH"
           echo "✅ 验证 Clang 版本..."
           clang-21 --version
 
-      # 5️⃣ 安装编译依赖
+      # 5️⃣ 🔑 精简：安装编译依赖（不含 32 位库）
       - name: 安装编译依赖
         run: |
           sudo apt-get update
@@ -71,13 +69,12 @@ jobs:
             libswitch-perl policycoreutils minicom libxml-sax-base-perl \
             libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev \
             x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev \
-            xsltproc unzip device-tree-compiler python3-pip flex libelf-dev \
-            libc6:i386 libstdc++6:i386 zlib1g:i386
+            xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
+            # 🔑 已移除: libc6:i386 libstdc++6:i386 zlib1g:i386
 
       # 6️⃣ 编译内核（纯 LLVM 工具链）
       - name: 编译内核
         env:
-          # 🔑 PATH 必须包含 CLANG_BIN_DIR，这样 CC=clang 包装脚本才能找到 clang-21
           PATH: "${{ env.CLANG_BIN_DIR }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           CC: clang
           LD: ld.lld
@@ -96,10 +93,10 @@ jobs:
           make mrproper || true
           
           echo "⚙️ 加载配置: sun_consolidate.config"
-          make sun_consolidate.config          
+          make sun_consolidate.config
+          
           echo "🔎 验证 FUSE Passthrough 配置..."
-          if grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config; then
-            echo "✅ CONFIG_FUSE_PASSTHROUGH 已启用"
+          if grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config; then            echo "✅ CONFIG_FUSE_PASSTHROUGH 已启用"
           else
             echo "❌ CONFIG_FUSE_PASSTHROUGH 未找到"
             exit 1
@@ -145,10 +142,10 @@ jobs:
       # 8️⃣ 打包 AnyKernel3.zip
       - name: 打包 AnyKernel3.zip
         run: |
-          cd ${{ env.AK3_DIR }}          zip -r9 ../AnyKernel3-OP5D0DL1.zip * \
+          cd ${{ env.AK3_DIR }}
+          zip -r9 ../AnyKernel3-OP5D0DL1.zip * \
             -x ".git*" -x "*.md" -x "LICENSE" -x "README*" -x "*.sh~"
-          cd ..
-          echo "✅ 打包完成: $(ls -lh AnyKernel3-OP5D0DL1.zip)"
+          cd ..          echo "✅ 打包完成: $(ls -lh AnyKernel3-OP5D0DL1.zip)"
 
       # 9️⃣ 上传构建产物
       - name: 上传构建产物
