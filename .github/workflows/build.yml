@@ -28,6 +28,5 @@ jobs:
           config: sun_consolidate.config
           arch: arm64
           other-clang-url: "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz"
-          android-version: 16
           # 如需集成 KernelSU，取消下一行注释
           # ksu: true
