@@ -65,13 +65,11 @@ jobs:
                 src=$(echo "$line" | sed -E 's/^\s*source\s+"([^"]*)".*/\1/')
                 if [ ! -f "$src" ]; then
                   parent=$(dirname "$src")
-                  # 清理可能存在的换行符等不可见字符
+                  # 清理不可见字符
                   parent=$(printf '%s' "$parent")
-                  # 若不是目录（不存在或为文件），则安全清空后创建目录
-                  if [ ! -d "$parent" ]; then
-                    rm -rf "$parent"
-                    mkdir -p "$parent"
-                  fi
+                  # 尝试删除可能存在的同名文件（对目录无影响），然后创建目录
+                  rm -f "$parent"
+                  mkdir -p "$parent"
                   echo "# placeholder" > "$src"
                   echo "  Created placeholder Kconfig: $src"
                 fi
