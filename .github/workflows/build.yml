@@ -3,6 +3,14 @@ name: Build OnePlus 13 Kernel
 on:
   workflow_dispatch:
     inputs:
+      branch:
+        description: '选择要构建的分支'
+        type: choice
+        options:
+          - main
+          - lineage-22.1
+          - dev
+        default: 'main'
       enable_fuse_passthrough:
         description: 'Enable FUSE Passthrough'
         type: boolean
@@ -20,6 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.inputs.branch }}
           fetch-depth: 1
           lfs: false
 
@@ -56,26 +65,75 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
-      # 👇 步骤 A：应用 FUSE Passthrough 补丁
-      - name: Apply FUSE Passthrough patches from openEuler
+      # 👇 步骤 A：从 openEuler 自动提取 FUSE Passthrough 补丁并保存到仓库
+      - name: Extract and save FUSE Passthrough patches
         run: |
           cd ${{ env.KERNEL_DIR }}
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions"
 
-          git remote add openeuler https://gitee.com/openeuler/kernel.git
-          git fetch openeuler OLK-6.6 --depth=500
+          PATCH_DIR="patches/fuse-passthrough"
+          mkdir -p "$PATCH_DIR"
 
-          # 第一个 FUSE Passthrough 补丁与最后一个相关补丁（已确认）
-          FIRST_COMMIT="8569e2ba66d5971f461a85d3344b1437f6d6c3ee"
-          LAST_COMMIT="fa97c7232a31874f42bc57eec10dc5ad19f3e447"
+          # 如果补丁文件已存在，直接跳过提取
+          if ls "$PATCH_DIR"/*.patch 1> /dev/null 2>&1; then
+            echo "Patches already extracted, skipping..."
+          else
+            echo "Extracting patches from openEuler OLK-6.6..."
 
-          git cherry-pick ${FIRST_COMMIT}^..${LAST_COMMIT}
+            git remote add openeuler https://gitee.com/openeuler/kernel.git 2>/dev/null || true
+            git fetch openeuler OLK-6.6 --depth=500
 
-          # 验证补丁是否成功应用
-          grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig && echo "Patches applied successfully" || { echo "Error applying patches"; exit 1; }
+            # 查找所有 FUSE_PASSTHROUGH 相关的 commit，并按时间正序排列
+            COMMITS=$(git log openeuler/OLK-6.6 --oneline --grep="FUSE_PASSTHROUGH\|fuse.*passthrough" --reverse --format="%H")
 
-      # 👇 步骤 B：注释缺失的驱动引用
+            if [ -z "$COMMITS" ]; then
+              echo "No FUSE Passthrough commits found"
+              exit 1
+            fi
+
+            # 将 commit 列表转换为数组
+            readarray -t COMMIT_ARRAY <<< "$COMMITS"
+            FIRST="${COMMIT_ARRAY[0]}"
+            LAST="${COMMIT_ARRAY[-1]}"
+
+            echo "First commit: $FIRST"
+            echo "Last commit: $LAST"
+
+            # 导出为 patch 文件
+            git format-patch ${FIRST}^..${LAST} -o "$PATCH_DIR"
+
+            echo "Patches extracted:"
+            ls -la "$PATCH_DIR"
+          fi
+
+      # 👇 步骤 B：应用补丁（如果尚未应用）
+      - name: Apply FUSE Passthrough patches
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          PATCH_DIR="patches/fuse-passthrough"
+
+          if grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig 2>/dev/null; then
+            echo "FUSE Passthrough patches already applied."
+          else
+            echo "Applying FUSE Passthrough patches..."
+            git am "$PATCH_DIR"/*.patch
+            echo "Patches applied successfully."
+          fi
+
+      # 👇 步骤 C：提交补丁文件到仓库（永久保存）
+      - name: Commit patches to repository
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          git add patches/fuse-passthrough/
+          if git diff --cached --quiet; then
+            echo "No new patches to commit"
+          else
+            git commit -m "Add FUSE Passthrough patch files extracted from openEuler OLK-6.6"
+            git push origin HEAD:${{ github.event.inputs.branch }}
+          fi
+
+      # 👇 步骤 D：注释缺失的驱动引用
       - name: Disable Missing Drivers (Comment out stale references)
         run: |
           cd ${{ env.KERNEL_DIR }}
@@ -130,16 +188,16 @@ jobs:
 
           echo "=== 缺失引用全部注释完毕 ==="
 
-      # 👇 步骤 C：将补丁及注释的修改永久保存到仓库
-      - name: Commit and push changes
+      # 👇 步骤 E：提交注释修改
+      - name: Commit annotation changes
         run: |
           cd ${{ env.KERNEL_DIR }}
           git add -A
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "No annotation changes to commit"
           else
-            git commit -m "Apply FUSE Passthrough patches & comment out missing references [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
+            git commit -m "Comment out missing Kconfig/Makefile references [skip ci]"
+            git push origin HEAD:${{ github.event.inputs.branch }}
           fi
 
       - name: Build Kernel
@@ -152,7 +210,6 @@ jobs:
           make vendor/sun_consolidate.config
 
           if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
-            # 自动检测是否支持 FUSE_PASSTHROUGH（此时补丁已应用，应该存在）
             if grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig 2>/dev/null; then
               echo "Kconfig supports FUSE_PASSTHROUGH, enabling..."
               scripts/config --enable CONFIG_FUSE_FS
