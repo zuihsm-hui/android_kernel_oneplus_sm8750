@@ -3,14 +3,6 @@ name: Build OnePlus 13 Kernel
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: '选择要构建的分支'
-        type: choice
-        options:
-          - main
-          - lineage-22.1
-          - dev
-        default: 'main'
       enable_fuse_passthrough:
         description: 'Enable FUSE Passthrough'
         type: boolean
@@ -28,7 +20,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.branch }}
           fetch-depth: 1
           lfs: false
 
@@ -75,11 +66,13 @@ jobs:
           git remote add openeuler https://gitee.com/openeuler/kernel.git
           git fetch openeuler OLK-6.6 --depth=500
 
+          # 第一个 FUSE Passthrough 补丁与最后一个相关补丁（已确认）
           FIRST_COMMIT="8569e2ba66d5971f461a85d3344b1437f6d6c3ee"
           LAST_COMMIT="fa97c7232a31874f42bc57eec10dc5ad19f3e447"
 
           git cherry-pick ${FIRST_COMMIT}^..${LAST_COMMIT}
 
+          # 验证补丁是否成功应用
           grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig && echo "Patches applied successfully" || { echo "Error applying patches"; exit 1; }
 
       # 👇 步骤 B：注释缺失的驱动引用
@@ -137,7 +130,7 @@ jobs:
 
           echo "=== 缺失引用全部注释完毕 ==="
 
-      # 👇 步骤 C：将补丁及注释的修改永久保存到所选分支
+      # 👇 步骤 C：将补丁及注释的修改永久保存到仓库
       - name: Commit and push changes
         run: |
           cd ${{ env.KERNEL_DIR }}
@@ -146,7 +139,7 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Apply FUSE Passthrough patches & comment out missing references [skip ci]"
-            git push origin HEAD:${{ github.event.inputs.branch }}
+            git push origin HEAD:${{ github.ref_name }}
           fi
 
       - name: Build Kernel
@@ -159,6 +152,7 @@ jobs:
           make vendor/sun_consolidate.config
 
           if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
+            # 自动检测是否支持 FUSE_PASSTHROUGH（此时补丁已应用，应该存在）
             if grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig 2>/dev/null; then
               echo "Kconfig supports FUSE_PASSTHROUGH, enabling..."
               scripts/config --enable CONFIG_FUSE_FS
