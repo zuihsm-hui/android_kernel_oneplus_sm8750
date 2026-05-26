@@ -98,12 +98,12 @@ jobs:
           echo "Extracted $(ls "$PATCH_DIR"/*.patch | wc -l) patches."
 
       # ------------------------------------------------------------
-      # 步骤 2：将补丁文件提交到仓库（永久保存）
+      # 步骤 2：将补丁文件强制添加到仓库（忽略 .gitignore）
       # ------------------------------------------------------------
       - name: Commit patch files to repository
         run: |
           cd ${{ env.KERNEL_DIR }}
-          git add patches/fuse-passthrough/
+          git add -f patches/fuse-passthrough/
           if git diff --cached --quiet; then
             echo "No new patches to commit"
           else
