@@ -1,0 +1,371 @@
+From 58a741b0b51421bcdb66db8aade31b86c4169002 Mon Sep 17 00:00:00 2001
+From: Amir Goldstein <amir73il@gmail.com>
+Date: Tue, 6 May 2025 09:26:30 +0800
+Subject: [PATCH 04/20] fuse: implement open in passthrough mode
+
+mainline inclusion
+from mainline-v6.9-rc1
+commit 4a90451bbc7f7fde94041fbb9ca96dd915069943
+category: feature
+bugzilla: https://gitee.com/src-openeuler/kernel/issues/IBHLU4
+
+Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=4a90451bbc7f7fde94041fbb9ca96dd915069943
+
+--------------------------------
+
+After getting a backing file id with FUSE_DEV_IOC_BACKING_OPEN ioctl,
+a FUSE server can reply to an OPEN request with flag FOPEN_PASSTHROUGH
+and the backing file id.
+
+The FUSE server should reuse the same backing file id for all the open
+replies of the same FUSE inode and open will fail (with -EIO) if a the
+server attempts to open the same inode with conflicting io modes or to
+setup passthrough to two different backing files for the same FUSE inode.
+Using the same backing file id for several different inodes is allowed.
+
+Opening a new file with FOPEN_DIRECT_IO for an inode that is already
+open for passthrough is allowed, but only if the FOPEN_PASSTHROUGH flag
+and correct backing file id are specified as well.
+
+The read/write IO of such files will not use passthrough operations to
+the backing file, but mmap, which does not support direct_io, will use
+the backing file insead of using the page cache as it always did.
+
+Even though all FUSE passthrough files of the same inode use the same
+backing file as a backing inode reference, each FUSE file opens a unique
+instance of a backing_file object to store the FUSE path that was used
+to open the inode and the open flags of the specific open file.
+
+The per-file, backing_file object is released along with the FUSE file.
+The inode associated fuse_backing object is released when the last FUSE
+passthrough file of that inode is released AND when the backing file id
+is closed by the server using the FUSE_DEV_IOC_BACKING_CLOSE ioctl.
+
+Signed-off-by: Amir Goldstein <amir73il@gmail.com>
+Signed-off-by: Miklos Szeredi <mszeredi@redhat.com>
+Signed-off-by: Yifan Qiao <qiaoyifan4@huawei.com>
+---
+ fs/fuse/file.c        |  9 ++++++-
+ fs/fuse/fuse_i.h      | 35 ++++++++++++++++++++++++-
+ fs/fuse/iomode.c      | 60 ++++++++++++++++++++++++++++++++++++++-----
+ fs/fuse/passthrough.c | 59 ++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 155 insertions(+), 8 deletions(-)
+
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+index 2b047dd351..d192c44e8a 100644
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -294,6 +294,9 @@ static void fuse_prepare_release(struct fuse_inode *fi, struct fuse_file *ff,
+ 	struct fuse_conn *fc = ff->fm->fc;
+ 	struct fuse_release_args *ra = &ff->args->release_args;
+ 
++	if (fuse_file_passthrough(ff))
++		fuse_passthrough_release(ff, fuse_inode_backing(fi));
++
+ 	/* Inode is NULL on error path of fuse_create_open() */
+ 	if (likely(fi)) {
+ 		spin_lock(&fi->lock);
+@@ -1380,7 +1383,7 @@ static void fuse_dio_lock(struct kiocb *iocb, struct iov_iter *from,
+ 		 * have raced, so check it again.
+ 		 */
+ 		if (fuse_io_past_eof(iocb, from) ||
+-		    fuse_file_uncached_io_start(inode, ff) != 0) {
++		    fuse_file_uncached_io_start(inode, ff, NULL) != 0) {
+ 			inode_unlock_shared(inode);
+ 			inode_lock(inode);
+ 			*exclusive = true;
+@@ -2556,6 +2559,10 @@ static int fuse_file_mmap(struct file *file, struct vm_area_struct *vma)
+ 	if (FUSE_IS_DAX(file_inode(file)))
+ 		return fuse_dax_mmap(file, vma);
+ 
++	/* TODO: implement mmap to backing file */
++	if (fuse_file_passthrough(ff))
++		return -ENODEV;
++
+ 	/*
+ 	 * FOPEN_DIRECT_IO handling is special compared to O_DIRECT,
+ 	 * as does not allow MAP_SHARED mmap without FUSE_DIRECT_IO_ALLOW_MMAP.
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+index 60571a7ffa..a00e1be2ab 100644
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -270,6 +270,12 @@ struct fuse_file {
+ 	/** Does file hold a fi->iocachectr refcount? */
+ 	enum { IOM_NONE, IOM_CACHED, IOM_UNCACHED } iomode;
+ 
++#ifdef CONFIG_FUSE_PASSTHROUGH
++	/** Reference to backing file in passthrough mode */
++	struct file *passthrough;
++	const struct cred *cred;
++#endif
++
+ 	/** Has flock been performed on this file? */
+ 	bool flock:1;
+ };
+@@ -1405,7 +1411,7 @@ int fuse_fileattr_set(struct mnt_idmap *idmap,
+ 
+ /* iomode.c */
+ int fuse_file_cached_io_start(struct inode *inode, struct fuse_file *ff);
+-int fuse_file_uncached_io_start(struct inode *inode, struct fuse_file *ff);
++int fuse_file_uncached_io_start(struct inode *inode, struct fuse_file *ff, struct fuse_backing *fb);
+ void fuse_file_uncached_io_end(struct inode *inode, struct fuse_file *ff);
+ 
+ int fuse_file_io_open(struct file *file, struct inode *inode);
+@@ -1437,11 +1443,38 @@ static inline struct fuse_backing *fuse_inode_backing_set(struct fuse_inode *fi,
+ #endif
+ }
+ 
++#ifdef CONFIG_FUSE_PASSTHROUGH
+ struct fuse_backing *fuse_backing_get(struct fuse_backing *fb);
+ void fuse_backing_put(struct fuse_backing *fb);
++#else
++
++static inline struct fuse_backing *fuse_backing_get(struct fuse_backing *fb)
++{
++	return NULL;
++}
++
++static inline void fuse_backing_put(struct fuse_backing *fb)
++{
++}
++#endif
++
+ void fuse_backing_files_init(struct fuse_conn *fc);
+ void fuse_backing_files_free(struct fuse_conn *fc);
+ int fuse_backing_open(struct fuse_conn *fc, struct fuse_backing_map *map);
+ int fuse_backing_close(struct fuse_conn *fc, int backing_id);
+ 
++struct fuse_backing *fuse_passthrough_open(struct file *file,
++					   struct inode *inode,
++					   int backing_id);
++void fuse_passthrough_release(struct fuse_file *ff, struct fuse_backing *fb);
++
++static inline struct file *fuse_file_passthrough(struct fuse_file *ff)
++{
++#ifdef CONFIG_FUSE_PASSTHROUGH
++	return ff->passthrough;
++#else
++	return NULL;
++#endif
++}
++
+ #endif /* _FS_FUSE_I_H */
+diff --git a/fs/fuse/iomode.c b/fs/fuse/iomode.c
+index 2161bdf91d..c653ddcf05 100644
+--- a/fs/fuse/iomode.c
++++ b/fs/fuse/iomode.c
+@@ -17,7 +17,7 @@
+  */
+ static inline bool fuse_is_io_cache_wait(struct fuse_inode *fi)
+ {
+-	return READ_ONCE(fi->iocachectr) < 0;
++	return READ_ONCE(fi->iocachectr) < 0 && !fuse_inode_backing(fi);
+ }
+ 
+ /*
+@@ -45,6 +45,17 @@ int fuse_file_cached_io_start(struct inode *inode, struct fuse_file *ff)
+ 		wait_event(fi->direct_io_waitq, !fuse_is_io_cache_wait(fi));
+ 		spin_lock(&fi->lock);
+ 	}
++
++	/*
++	 * Check if inode entered passthrough io mode while waiting for parallel
++	 * dio write completion.
++	 */
++	if (fuse_inode_backing(fi)) {
++		clear_bit(FUSE_I_CACHE_IO_MODE, &fi->state);
++		spin_unlock(&fi->lock);
++		return -ETXTBSY;
++	}
++
+ 	WARN_ON(ff->iomode == IOM_UNCACHED);
+ 	if (ff->iomode == IOM_NONE) {
+ 		ff->iomode = IOM_CACHED;
+@@ -71,12 +82,19 @@ static void fuse_file_cached_io_end(struct inode *inode, struct fuse_file *ff)
+ }
+ 
+ /* Start strictly uncached io mode where cache access is not allowed */
+-int fuse_file_uncached_io_start(struct inode *inode, struct fuse_file *ff)
++int fuse_file_uncached_io_start(struct inode *inode, struct fuse_file *ff, struct fuse_backing *fb)
+ {
+ 	struct fuse_inode *fi = get_fuse_inode(inode);
++	struct fuse_backing *oldfb;
+ 	int err = 0;
+ 
+ 	spin_lock(&fi->lock);
++	/* deny conflicting backing files on same fuse inode */
++	oldfb = fuse_inode_backing(fi);
++	if (oldfb && oldfb != fb) {
++		err = -EBUSY;
++		goto unlock;
++	}
+ 	if (fi->iocachectr > 0) {
+ 		err = -ETXTBSY;
+ 		goto unlock;
+@@ -84,6 +102,14 @@ int fuse_file_uncached_io_start(struct inode *inode, struct fuse_file *ff)
+ 	WARN_ON(ff->iomode != IOM_NONE);
+ 	fi->iocachectr--;
+ 	ff->iomode = IOM_UNCACHED;
++
++	/* fuse inode holds a single refcount of backing file */
++	if (!oldfb) {
++		oldfb = fuse_inode_backing_set(fi, fb);
++		WARN_ON_ONCE(oldfb != NULL);
++	} else {
++		fuse_backing_put(fb);
++	}
+ unlock:
+ 	spin_unlock(&fi->lock);
+ 	return err;
+@@ -92,15 +118,20 @@ int fuse_file_uncached_io_start(struct inode *inode, struct fuse_file *ff)
+ void fuse_file_uncached_io_end(struct inode *inode, struct fuse_file *ff)
+ {
+ 	struct fuse_inode *fi = get_fuse_inode(inode);
++	struct fuse_backing *oldfb = NULL;
+ 
+ 	spin_lock(&fi->lock);
+ 	WARN_ON(fi->iocachectr >= 0);
+ 	WARN_ON(ff->iomode != IOM_UNCACHED);
+ 	ff->iomode = IOM_NONE;
+ 	fi->iocachectr++;
+-	if (!fi->iocachectr)
++	if (!fi->iocachectr) {
+ 		wake_up(&fi->direct_io_waitq);
++		oldfb = fuse_inode_backing_set(fi, NULL);
++	}
+ 	spin_unlock(&fi->lock);
++	if (oldfb)
++		fuse_backing_put(oldfb);
+ }
+ 
+ /*
+@@ -118,6 +149,7 @@ static int fuse_file_passthrough_open(struct inode *inode, struct file *file)
+ {
+ 	struct fuse_file *ff = file->private_data;
+ 	struct fuse_conn *fc = get_fuse_conn(inode);
++	struct fuse_backing *fb;
+ 	int err;
+ 
+ 	/* Check allowed conditions for file open in passthrough mode */
+@@ -125,11 +157,18 @@ static int fuse_file_passthrough_open(struct inode *inode, struct file *file)
+ 	    (ff->open_flags & ~FOPEN_PASSTHROUGH_MASK))
+ 		return -EINVAL;
+ 
+-	/* TODO: implement backing file open */
+-	return -EOPNOTSUPP;
++	fb = fuse_passthrough_open(file, inode,
++				   ff->args->open_outarg.backing_id);
++	if (IS_ERR(fb))
++		return PTR_ERR(fb);
+ 
+ 	/* First passthrough file open denies caching inode io mode */
+-	err = fuse_file_uncached_io_start(inode, ff);
++	err = fuse_file_uncached_io_start(inode, ff, fb);
++	if (!err)
++		return 0;
++
++	fuse_passthrough_release(ff, fb);
++	fuse_backing_put(fb);
+ 
+ 	return err;
+ }
+@@ -138,6 +177,7 @@ static int fuse_file_passthrough_open(struct inode *inode, struct file *file)
+ int fuse_file_io_open(struct file *file, struct inode *inode)
+ {
+ 	struct fuse_file *ff = file->private_data;
++	struct fuse_inode *fi = get_fuse_inode(inode);
+ 	int err;
+ 
+ 	/*
+@@ -147,6 +187,14 @@ int fuse_file_io_open(struct file *file, struct inode *inode)
+ 	if (FUSE_IS_DAX(inode) || !ff->args)
+ 		return 0;
+ 
++	/*
++	 * Server is expected to use FOPEN_PASSTHROUGH for all opens of an inode
++	 * which is already open for passthrough.
++	 */
++	err = -EINVAL;
++	if (fuse_inode_backing(fi) && !(ff->open_flags & FOPEN_PASSTHROUGH))
++		goto fail;
++
+ 	/*
+ 	 * FOPEN_PARALLEL_DIRECT_WRITES requires FOPEN_DIRECT_IO.
+ 	 */
+diff --git a/fs/fuse/passthrough.c b/fs/fuse/passthrough.c
+index 7ec92a54c2..dc054d2ab1 100644
+--- a/fs/fuse/passthrough.c
++++ b/fs/fuse/passthrough.c
+@@ -8,6 +8,7 @@
+ #include "fuse_i.h"
+ 
+ #include <linux/file.h>
++#include <linux/backing-file.h>
+ 
+ struct fuse_backing *fuse_backing_get(struct fuse_backing *fb)
+ {
+@@ -164,3 +165,61 @@ int fuse_backing_close(struct fuse_conn *fc, int backing_id)
+ 
+ 	return err;
+ }
++
++/*
++ * Setup passthrough to a backing file.
++ *
++ * Returns an fb object with elevated refcount to be stored in fuse inode.
++ */
++struct fuse_backing *fuse_passthrough_open(struct file *file,
++					   struct inode *inode,
++					   int backing_id)
++{
++	struct fuse_file *ff = file->private_data;
++	struct fuse_conn *fc = ff->fm->fc;
++	struct fuse_backing *fb = NULL;
++	struct file *backing_file;
++	int err;
++
++	err = -EINVAL;
++	if (backing_id <= 0)
++		goto out;
++
++	rcu_read_lock();
++	fb = idr_find(&fc->backing_files_map, backing_id);
++	fb = fuse_backing_get(fb);
++	rcu_read_unlock();
++
++	err = -ENOENT;
++	if (!fb)
++		goto out;
++
++	/* Allocate backing file per fuse file to store fuse path */
++	backing_file = backing_file_open(&file->f_path, file->f_flags,
++					 &fb->file->f_path, fb->cred);
++	err = PTR_ERR(backing_file);
++	if (IS_ERR(backing_file)) {
++		fuse_backing_put(fb);
++		goto out;
++	}
++
++	err = 0;
++	ff->passthrough = backing_file;
++	ff->cred = get_cred(fb->cred);
++out:
++	pr_debug("%s: backing_id=%d, fb=0x%p, backing_file=0x%p, err=%i\n", __func__,
++		 backing_id, fb, ff->passthrough, err);
++
++	return err ? ERR_PTR(err) : fb;
++}
++
++void fuse_passthrough_release(struct fuse_file *ff, struct fuse_backing *fb)
++{
++	pr_debug("%s: fb=0x%p, backing_file=0x%p\n", __func__,
++		 fb, ff->passthrough);
++
++	fput(ff->passthrough);
++	ff->passthrough = NULL;
++	put_cred(ff->cred);
++	ff->cred = NULL;
++}
+-- 
+2.54.0
+

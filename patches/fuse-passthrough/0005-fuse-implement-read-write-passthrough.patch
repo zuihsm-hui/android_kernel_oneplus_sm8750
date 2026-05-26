@@ -1,0 +1,162 @@
+From 0f41cdd31c407da699ab1ef060ac847cfb43cb47 Mon Sep 17 00:00:00 2001
+From: Amir Goldstein <amir73il@gmail.com>
+Date: Tue, 6 May 2025 09:26:31 +0800
+Subject: [PATCH 05/20] fuse: implement read/write passthrough
+
+mainline inclusion
+from mainline-v6.9-rc1
+commit 57e1176e6086673d31bf0a0dc58e144c8e65e589
+category: feature
+bugzilla: https://gitee.com/src-openeuler/kernel/issues/IBHLU4
+
+Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=57e1176e6086673d31bf0a0dc58e144c8e65e589
+
+--------------------------------
+
+Use the backing file read/write helpers to implement read/write
+passthrough to a backing file.
+
+After read/write, we invalidate a/c/mtime/size attributes.
+
+Signed-off-by: Amir Goldstein <amir73il@gmail.com>
+Signed-off-by: Miklos Szeredi <mszeredi@redhat.com>
+Signed-off-by: Yifan Qiao <qiaoyifan4@huawei.com>
+---
+ fs/fuse/file.c        | 18 +++++++----
+ fs/fuse/fuse_i.h      |  3 ++
+ fs/fuse/passthrough.c | 69 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 84 insertions(+), 6 deletions(-)
+
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+index d192c44e8a..daa94bc404 100644
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -1716,10 +1716,13 @@ static ssize_t fuse_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
+ 	if (FUSE_IS_DAX(inode))
+ 		return fuse_dax_read_iter(iocb, to);
+ 
+-	if (!(ff->open_flags & FOPEN_DIRECT_IO))
+-		return fuse_cache_read_iter(iocb, to);
+-	else
++	/* FOPEN_DIRECT_IO overrides FOPEN_PASSTHROUGH */
++	if (ff->open_flags & FOPEN_DIRECT_IO)
+ 		return fuse_direct_read_iter(iocb, to);
++	else if (fuse_file_passthrough(ff))
++		return fuse_passthrough_read_iter(iocb, to);
++	else
++		return fuse_cache_read_iter(iocb, to);
+ }
+ 
+ static ssize_t fuse_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
+@@ -1734,10 +1737,13 @@ static ssize_t fuse_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
+ 	if (FUSE_IS_DAX(inode))
+ 		return fuse_dax_write_iter(iocb, from);
+ 
+-	if (!(ff->open_flags & FOPEN_DIRECT_IO))
+-		return fuse_cache_write_iter(iocb, from);
+-	else
++	/* FOPEN_DIRECT_IO overrides FOPEN_PASSTHROUGH */
++	if (ff->open_flags & FOPEN_DIRECT_IO)
+ 		return fuse_direct_write_iter(iocb, from);
++	else if (fuse_file_passthrough(ff))
++		return fuse_passthrough_write_iter(iocb, from);
++	else
++		return fuse_cache_write_iter(iocb, from);
+ }
+ 
+ static void fuse_writepage_free(struct fuse_writepage_args *wpa)
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+index a00e1be2ab..dbf0a755cc 100644
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -1477,4 +1477,7 @@ static inline struct file *fuse_file_passthrough(struct fuse_file *ff)
+ #endif
+ }
+ 
++ssize_t fuse_passthrough_read_iter(struct kiocb *iocb, struct iov_iter *iter);
++ssize_t fuse_passthrough_write_iter(struct kiocb *iocb, struct iov_iter *iter);
++
+ #endif /* _FS_FUSE_I_H */
+diff --git a/fs/fuse/passthrough.c b/fs/fuse/passthrough.c
+index dc054d2ab1..0e5d316bda 100644
+--- a/fs/fuse/passthrough.c
++++ b/fs/fuse/passthrough.c
+@@ -10,6 +10,75 @@
+ #include <linux/file.h>
+ #include <linux/backing-file.h>
+ 
++static void fuse_file_accessed(struct file *file)
++{
++	struct inode *inode = file_inode(file);
++
++	fuse_invalidate_atime(inode);
++}
++
++static void fuse_file_modified(struct file *file)
++{
++	struct inode *inode = file_inode(file);
++
++	fuse_invalidate_attr_mask(inode, FUSE_STATX_MODSIZE);
++}
++
++ssize_t fuse_passthrough_read_iter(struct kiocb *iocb, struct iov_iter *iter)
++{
++	struct file *file = iocb->ki_filp;
++	struct fuse_file *ff = file->private_data;
++	struct file *backing_file = fuse_file_passthrough(ff);
++	size_t count = iov_iter_count(iter);
++	ssize_t ret;
++	struct backing_file_ctx ctx = {
++		.cred = ff->cred,
++		.user_file = file,
++		.accessed = fuse_file_accessed,
++	};
++
++
++	pr_debug("%s: backing_file=0x%p, pos=%lld, len=%zu\n", __func__,
++		 backing_file, iocb->ki_pos, count);
++
++	if (!count)
++		return 0;
++
++	ret = backing_file_read_iter(backing_file, iter, iocb, iocb->ki_flags,
++				     &ctx);
++
++	return ret;
++}
++
++ssize_t fuse_passthrough_write_iter(struct kiocb *iocb,
++				    struct iov_iter *iter)
++{
++	struct file *file = iocb->ki_filp;
++	struct inode *inode = file_inode(file);
++	struct fuse_file *ff = file->private_data;
++	struct file *backing_file = fuse_file_passthrough(ff);
++	size_t count = iov_iter_count(iter);
++	ssize_t ret;
++	struct backing_file_ctx ctx = {
++		.cred = ff->cred,
++		.user_file = file,
++		.end_write = fuse_file_modified,
++	};
++
++	pr_debug("%s: backing_file=0x%p, pos=%lld, len=%zu\n", __func__,
++		 backing_file, iocb->ki_pos, count);
++
++	if (!count)
++		return 0;
++
++	inode_lock(inode);
++	ret = backing_file_write_iter(backing_file, iter, iocb, iocb->ki_flags,
++				      &ctx);
++	inode_unlock(inode);
++
++	return ret;
++}
++
+ struct fuse_backing *fuse_backing_get(struct fuse_backing *fb)
+ {
+ 	if (fb && refcount_inc_not_zero(&fb->count))
+-- 
+2.54.0
+

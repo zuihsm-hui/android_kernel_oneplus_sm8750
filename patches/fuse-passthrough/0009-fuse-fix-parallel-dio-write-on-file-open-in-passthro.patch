@@ -1,0 +1,64 @@
+From 406dcbcd822c90f8205444b588275688af2f5677 Mon Sep 17 00:00:00 2001
+From: Amir Goldstein <amir73il@gmail.com>
+Date: Tue, 6 May 2025 09:26:35 +0800
+Subject: [PATCH 09/20] fuse: fix parallel dio write on file open in
+ passthrough mode
+
+mainline inclusion
+from mainline-v6.9-rc5
+commit 7cc911262835419fe469ebfae89891c0e97c62ef
+category: bugfix
+bugzilla: https://gitee.com/src-openeuler/kernel/issues/IBHLU4
+
+Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=7cc911262835419fe469ebfae89891c0e97c62ef
+
+--------------------------------
+
+Parallel dio write takes a negative refcount of fi->iocachectr and so does
+open of file in passthrough mode.
+
+The refcount of passthrough mode is associated with attach/detach of a
+fuse_backing object to fuse inode.
+
+For parallel dio write, the backing file is irrelevant, so the call to
+fuse_inode_uncached_io_start() passes a NULL fuse_backing object.
+
+Passing a NULL fuse_backing will result in false -EBUSY error if the file
+is already open in passthrough mode.
+
+Allow taking negative fi->iocachectr refcount with NULL fuse_backing,
+because it does not conflict with an already attached fuse_backing object.
+
+Fixes: 4a90451bbc7f ("fuse: implement open in passthrough mode")
+Signed-off-by: Amir Goldstein <amir73il@gmail.com>
+Signed-off-by: Miklos Szeredi <mszeredi@redhat.com>
+Signed-off-by: Yifan Qiao <qiaoyifan4@huawei.com>
+---
+ fs/fuse/iomode.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/fs/fuse/iomode.c b/fs/fuse/iomode.c
+index 98f1fd523d..c99e285f31 100644
+--- a/fs/fuse/iomode.c
++++ b/fs/fuse/iomode.c
+@@ -90,7 +90,7 @@ int fuse_inode_uncached_io_start(struct fuse_inode *fi, struct fuse_backing *fb)
+ 	spin_lock(&fi->lock);
+ 	/* deny conflicting backing files on same fuse inode */
+ 	oldfb = fuse_inode_backing(fi);
+-	if (oldfb && oldfb != fb) {
++	if (fb && oldfb && oldfb != fb) {
+ 		err = -EBUSY;
+ 		goto unlock;
+ 	}
+@@ -101,7 +101,7 @@ int fuse_inode_uncached_io_start(struct fuse_inode *fi, struct fuse_backing *fb)
+ 	fi->iocachectr--;
+ 
+ 	/* fuse inode holds a single refcount of backing file */
+-	if (!oldfb) {
++	if (fb && !oldfb) {
+ 		oldfb = fuse_inode_backing_set(fi, fb);
+ 		WARN_ON_ONCE(oldfb != NULL);
+ 	} else {
+-- 
+2.54.0
+

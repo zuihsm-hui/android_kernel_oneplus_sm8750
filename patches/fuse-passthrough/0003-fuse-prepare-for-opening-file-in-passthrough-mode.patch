@@ -1,0 +1,310 @@
+From 1368b3133c47a79686038374ea64e94c68d9441b Mon Sep 17 00:00:00 2001
+From: Amir Goldstein <amir73il@gmail.com>
+Date: Tue, 6 May 2025 09:26:29 +0800
+Subject: [PATCH 03/20] fuse: prepare for opening file in passthrough mode
+
+mainline inclusion
+from mainline-v6.9-rc1
+commit fc8ff397b2a91590031ae08534de627f957005cb
+category: feature
+bugzilla: https://gitee.com/src-openeuler/kernel/issues/IBHLU4
+
+Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=fc8ff397b2a91590031ae08534de627f957005cb
+
+--------------------------------
+
+In preparation for opening file in passthrough mode, store the
+fuse_open_out argument in ff->args to be passed into fuse_file_io_open()
+with the optional backing_id member.
+
+This will be used for setting up passthrough to backing file on open
+reply with FOPEN_PASSTHROUGH flag and a valid backing_id.
+
+Opening a file in passthrough mode may fail for several reasons, such as
+missing capability, conflicting open flags or inode in caching mode.
+Return EIO from fuse_file_io_open() in those cases.
+
+The combination of FOPEN_PASSTHROUGH and FOPEN_DIRECT_IO is allowed -
+it mean that read/write operations will go directly to the server,
+but mmap will be done to the backing file.
+
+Signed-off-by: Amir Goldstein <amir73il@gmail.com>
+Signed-off-by: Miklos Szeredi <mszeredi@redhat.com>
+Signed-off-by: Yifan Qiao <qiaoyifan4@huawei.com>
+---
+ fs/fuse/dir.c    | 12 +++++++-----
+ fs/fuse/file.c   | 34 +++++++++++++++-------------------
+ fs/fuse/fuse_i.h | 19 ++++++++++++++++---
+ fs/fuse/iomode.c | 44 ++++++++++++++++++++++++++++++++++++++++----
+ 4 files changed, 78 insertions(+), 31 deletions(-)
+
+diff --git a/fs/fuse/dir.c b/fs/fuse/dir.c
+index ca865e7c4b..1ca3d3643d 100644
+--- a/fs/fuse/dir.c
++++ b/fs/fuse/dir.c
+@@ -619,7 +619,7 @@ static int fuse_create_open(struct inode *dir, struct dentry *entry,
+ 	FUSE_ARGS(args);
+ 	struct fuse_forget_link *forget;
+ 	struct fuse_create_in inarg;
+-	struct fuse_open_out outopen;
++	struct fuse_open_out *outopenp;
+ 	struct fuse_entry_out outentry;
+ 	struct fuse_inode *fi;
+ 	struct fuse_file *ff;
+@@ -663,8 +663,10 @@ static int fuse_create_open(struct inode *dir, struct dentry *entry,
+ 	args.out_numargs = 2;
+ 	args.out_args[0].size = sizeof(outentry);
+ 	args.out_args[0].value = &outentry;
+-	args.out_args[1].size = sizeof(outopen);
+-	args.out_args[1].value = &outopen;
++	/* Store outarg for fuse_finish_open() */
++	outopenp = &ff->args->open_outarg;
++	args.out_args[1].size = sizeof(*outopenp);
++	args.out_args[1].value = outopenp;
+ 
+ 	err = get_create_ext(&args, dir, entry, mode);
+ 	if (err)
+@@ -680,9 +682,9 @@ static int fuse_create_open(struct inode *dir, struct dentry *entry,
+ 	    fuse_invalid_attr(&outentry.attr))
+ 		goto out_free_ff;
+ 
+-	ff->fh = outopen.fh;
++	ff->fh = outopenp->fh;
+ 	ff->nodeid = outentry.nodeid;
+-	ff->open_flags = outopen.open_flags;
++	ff->open_flags = outopenp->open_flags;
+ 	inode = fuse_iget(dir->i_sb, outentry.nodeid, outentry.generation,
+ 			  &outentry.attr, ATTR_TIMEOUT(&outentry), 0);
+ 	if (!inode) {
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+index 3a1751d7f7..2b047dd351 100644
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -49,12 +49,6 @@ static int fuse_send_open(struct fuse_mount *fm, u64 nodeid,
+ 	return fuse_simple_request(fm, &args);
+ }
+ 
+-struct fuse_release_args {
+-	struct fuse_args args;
+-	struct fuse_release_in inarg;
+-	struct inode *inode;
+-};
+-
+ struct fuse_file *fuse_file_alloc(struct fuse_mount *fm, bool release)
+ {
+ 	struct fuse_file *ff;
+@@ -65,9 +59,8 @@ struct fuse_file *fuse_file_alloc(struct fuse_mount *fm, bool release)
+ 
+ 	ff->fm = fm;
+ 	if (release) {
+-		ff->release_args = kzalloc(sizeof(*ff->release_args),
+-					   GFP_KERNEL_ACCOUNT);
+-		if (!ff->release_args) {
++		ff->args = kzalloc(sizeof(*ff->args), GFP_KERNEL_ACCOUNT);
++		if (!ff->args) {
+ 			kfree(ff);
+ 			return NULL;
+ 		}
+@@ -86,7 +79,7 @@ struct fuse_file *fuse_file_alloc(struct fuse_mount *fm, bool release)
+ 
+ void fuse_file_free(struct fuse_file *ff)
+ {
+-	kfree(ff->release_args);
++	kfree(ff->args);
+ 	mutex_destroy(&ff->readdir.lock);
+ 	kfree(ff);
+ }
+@@ -109,7 +102,7 @@ static void fuse_release_end(struct fuse_mount *fm, struct fuse_args *args,
+ static void fuse_file_put(struct fuse_file *ff, bool sync)
+ {
+ 	if (refcount_dec_and_test(&ff->count)) {
+-		struct fuse_release_args *ra = ff->release_args;
++		struct fuse_release_args *ra = &ff->args->release_args;
+ 		struct fuse_args *args = (ra ? &ra->args : NULL);
+ 
+ 		if (ra && ra->inode)
+@@ -146,20 +139,21 @@ struct fuse_file *fuse_file_open(struct fuse_mount *fm, u64 nodeid,
+ 	/* Default for no-open */
+ 	ff->open_flags = FOPEN_KEEP_CACHE | (isdir ? FOPEN_CACHE_DIR : 0);
+ 	if (open) {
+-		struct fuse_open_out outarg;
++		/* Store outarg for fuse_finish_open() */
++		struct fuse_open_out *outargp = &ff->args->open_outarg;
+ 		int err;
+ 
+-		err = fuse_send_open(fm, nodeid, open_flags, opcode, &outarg);
++		err = fuse_send_open(fm, nodeid, open_flags, opcode, outargp);
+ 		if (!err) {
+-			ff->fh = outarg.fh;
+-			ff->open_flags = outarg.open_flags;
++			ff->fh = outargp->fh;
++			ff->open_flags = outargp->open_flags;
+ 		} else if (err != -ENOSYS) {
+ 			fuse_file_free(ff);
+ 			return ERR_PTR(err);
+ 		} else {
+ 			/* No release needed */
+-			kfree(ff->release_args);
+-			ff->release_args = NULL;
++			kfree(ff->args);
++			ff->args = NULL;
+ 			if (isdir)
+ 				fc->no_opendir = 1;
+ 			else
+@@ -298,7 +292,7 @@ static void fuse_prepare_release(struct fuse_inode *fi, struct fuse_file *ff,
+ 				 unsigned int flags, int opcode, bool sync)
+ {
+ 	struct fuse_conn *fc = ff->fm->fc;
+-	struct fuse_release_args *ra = ff->release_args;
++	struct fuse_release_args *ra = &ff->args->release_args;
+ 
+ 	/* Inode is NULL on error path of fuse_create_open() */
+ 	if (likely(fi)) {
+@@ -316,6 +310,8 @@ static void fuse_prepare_release(struct fuse_inode *fi, struct fuse_file *ff,
+ 	if (!ra)
+ 		return;
+ 
++	/* ff->args was used for open outarg */
++	memset(ff->args, 0, sizeof(*ff->args));
+ 	ra->inarg.fh = ff->fh;
+ 	ra->inarg.flags = flags;
+ 	ra->args.in_numargs = 1;
+@@ -338,7 +334,7 @@ void fuse_file_release(struct inode *inode, struct fuse_file *ff,
+ 		       unsigned int open_flags, fl_owner_t id, bool isdir)
+ {
+ 	struct fuse_inode *fi = get_fuse_inode(inode);
+-	struct fuse_release_args *ra = ff->release_args;
++	struct fuse_release_args *ra = &ff->args->release_args;
+ 	int opcode = isdir ? FUSE_RELEASEDIR : FUSE_RELEASE;
+ 
+ 	fuse_prepare_release(fi, ff, open_flags, opcode, false);
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+index 16d19fdd05..60571a7ffa 100644
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -214,15 +214,15 @@ enum {
+ 
+ struct fuse_conn;
+ struct fuse_mount;
+-struct fuse_release_args;
++union fuse_file_args;
+ 
+ /** FUSE specific file data */
+ struct fuse_file {
+ 	/** Fuse connection for this file */
+ 	struct fuse_mount *fm;
+ 
+-	/* Argument space reserved for release */
+-	struct fuse_release_args *release_args;
++	/* Argument space reserved for open/release */
++	union fuse_file_args *args;
+ 
+ 	/** Kernel file handle guaranteed to be unique */
+ 	u64 kh;
+@@ -324,6 +324,19 @@ struct fuse_args_pages {
+ 	unsigned int num_pages;
+ };
+ 
++struct fuse_release_args {
++	struct fuse_args args;
++	struct fuse_release_in inarg;
++	struct inode *inode;
++};
++
++union fuse_file_args {
++	/* Used during open() */
++	struct fuse_open_out open_outarg;
++	/* Used during release() */
++	struct fuse_release_args release_args;
++};
++
+ #define FUSE_ARGS(args) struct fuse_args args = {}
+ 
+ /** The request IO state (for asynchronous processing) */
+diff --git a/fs/fuse/iomode.c b/fs/fuse/iomode.c
+index ea47c76b9d..2161bdf91d 100644
+--- a/fs/fuse/iomode.c
++++ b/fs/fuse/iomode.c
+@@ -31,7 +31,7 @@ int fuse_file_cached_io_start(struct inode *inode, struct fuse_file *ff)
+ 	struct fuse_inode *fi = get_fuse_inode(inode);
+ 
+ 	/* There are no io modes if server does not implement open */
+-	if (!ff->release_args)
++	if (!ff->args)
+ 		return 0;
+ 
+ 	spin_lock(&fi->lock);
+@@ -103,6 +103,37 @@ void fuse_file_uncached_io_end(struct inode *inode, struct fuse_file *ff)
+ 	spin_unlock(&fi->lock);
+ }
+ 
++/*
++ * Open flags that are allowed in combination with FOPEN_PASSTHROUGH.
++ * A combination of FOPEN_PASSTHROUGH and FOPEN_DIRECT_IO means that read/write
++ * operations go directly to the server, but mmap is done on the backing file.
++ * FOPEN_PASSTHROUGH mode should not co-exist with any users of the fuse inode
++ * page cache, so FOPEN_KEEP_CACHE is a strange and undesired combination.
++ */
++#define FOPEN_PASSTHROUGH_MASK \
++	(FOPEN_PASSTHROUGH | FOPEN_DIRECT_IO | FOPEN_PARALLEL_DIRECT_WRITES | \
++	 FOPEN_NOFLUSH)
++
++static int fuse_file_passthrough_open(struct inode *inode, struct file *file)
++{
++	struct fuse_file *ff = file->private_data;
++	struct fuse_conn *fc = get_fuse_conn(inode);
++	int err;
++
++	/* Check allowed conditions for file open in passthrough mode */
++	if (!IS_ENABLED(CONFIG_FUSE_PASSTHROUGH) || !fc->passthrough ||
++	    (ff->open_flags & ~FOPEN_PASSTHROUGH_MASK))
++		return -EINVAL;
++
++	/* TODO: implement backing file open */
++	return -EOPNOTSUPP;
++
++	/* First passthrough file open denies caching inode io mode */
++	err = fuse_file_uncached_io_start(inode, ff);
++
++	return err;
++}
++
+ /* Request access to submit new io to inode via open file */
+ int fuse_file_io_open(struct file *file, struct inode *inode)
+ {
+@@ -113,7 +144,7 @@ int fuse_file_io_open(struct file *file, struct inode *inode)
+ 	 * io modes are not relevant with DAX and with server that does not
+ 	 * implement open.
+ 	 */
+-	if (FUSE_IS_DAX(inode) || !ff->release_args)
++	if (FUSE_IS_DAX(inode) || !ff->args)
+ 		return 0;
+ 
+ 	/*
+@@ -123,16 +154,21 @@ int fuse_file_io_open(struct file *file, struct inode *inode)
+ 		ff->open_flags &= ~FOPEN_PARALLEL_DIRECT_WRITES;
+ 
+ 	/*
++	 * First passthrough file open denies caching inode io mode.
+ 	 * First caching file open enters caching inode io mode.
+ 	 *
+ 	 * Note that if user opens a file open with O_DIRECT, but server did
+ 	 * not specify FOPEN_DIRECT_IO, a later fcntl() could remove O_DIRECT,
+ 	 * so we put the inode in caching mode to prevent parallel dio.
+ 	 */
+-	if (ff->open_flags & FOPEN_DIRECT_IO)
++	if ((ff->open_flags & FOPEN_DIRECT_IO) &&
++	    !(ff->open_flags & FOPEN_PASSTHROUGH))
+ 		return 0;
+ 
+-	err = fuse_file_cached_io_start(inode, ff);
++	if (ff->open_flags & FOPEN_PASSTHROUGH)
++		err = fuse_file_passthrough_open(inode, file);
++	else
++		err = fuse_file_cached_io_start(inode, ff);
+ 	if (err)
+ 		goto fail;
+ 
+-- 
+2.54.0
+

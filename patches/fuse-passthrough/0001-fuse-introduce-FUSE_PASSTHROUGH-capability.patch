@@ -1,0 +1,320 @@
+From 8569e2ba66d5971f461a85d3344b1437f6d6c3ee Mon Sep 17 00:00:00 2001
+From: Amir Goldstein <amir73il@gmail.com>
+Date: Tue, 6 May 2025 09:26:27 +0800
+Subject: [PATCH 01/20] fuse: introduce FUSE_PASSTHROUGH capability
+
+mainline inclusion
+from mainline-v6.9-rc1
+commit 7dc4e97a4f9a55bae6ed6ab3f96c92921259d59f
+category: feature
+bugzilla: https://gitee.com/src-openeuler/kernel/issues/IBHLU4
+
+Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=7dc4e97a4f9a55bae6ed6ab3f96c92921259d59f
+
+--------------------------------
+
+FUSE_PASSTHROUGH capability to passthrough FUSE operations to backing
+files will be made available with kernel config CONFIG_FUSE_PASSTHROUGH.
+
+When requesting FUSE_PASSTHROUGH, userspace needs to specify the
+max_stack_depth that is allowed for FUSE on top of backing files.
+
+Introduce the flag FOPEN_PASSTHROUGH and backing_id to fuse_open_out
+argument that can be used when replying to OPEN request, to setup
+passthrough of io operations on the fuse inode to a backing file.
+
+Introduce a refcounted fuse_backing object that will be used to
+associate an open backing file with a fuse inode.
+
+Signed-off-by: Amir Goldstein <amir73il@gmail.com>
+Conflicts:
+	fs/fuse/fuse_i.h
+[Using KABI_RESERVE to skip kabi changes.]
+Signed-off-by: Yifan Qiao <qiaoyifan4@huawei.com>
+---
+ fs/fuse/Kconfig           | 11 ++++++++++
+ fs/fuse/Makefile          |  1 +
+ fs/fuse/fuse_i.h          | 46 +++++++++++++++++++++++++++++++++++----
+ fs/fuse/inode.c           | 26 ++++++++++++++++++++++
+ fs/fuse/passthrough.c     | 30 +++++++++++++++++++++++++
+ include/uapi/linux/fuse.h | 14 +++++++++---
+ 6 files changed, 121 insertions(+), 7 deletions(-)
+ create mode 100644 fs/fuse/passthrough.c
+
+diff --git a/fs/fuse/Kconfig b/fs/fuse/Kconfig
+index 038ed0b9aa..8674dbfbe5 100644
+--- a/fs/fuse/Kconfig
++++ b/fs/fuse/Kconfig
+@@ -52,3 +52,14 @@ config FUSE_DAX
+ 
+ 	  If you want to allow mounting a Virtio Filesystem with the "dax"
+ 	  option, answer Y.
++
++config FUSE_PASSTHROUGH
++	bool "FUSE passthrough operations support"
++	default y
++	depends on FUSE_FS
++	select FS_STACK
++	help
++	  This allows bypassing FUSE server by mapping specific FUSE operations
++	  to be performed directly on a backing file.
++
++	  If you want to allow passthrough operations, answer Y.
+diff --git a/fs/fuse/Makefile b/fs/fuse/Makefile
+index b734cc2a5e..6e0228c6d0 100644
+--- a/fs/fuse/Makefile
++++ b/fs/fuse/Makefile
+@@ -10,5 +10,6 @@ obj-$(CONFIG_VIRTIO_FS) += virtiofs.o
+ fuse-y := dev.o dir.o file.o inode.o control.o xattr.o acl.o readdir.o ioctl.o
+ fuse-y += iomode.o
+ fuse-$(CONFIG_FUSE_DAX) += dax.o
++fuse-$(CONFIG_FUSE_PASSTHROUGH) += passthrough.o
+ 
+ virtiofs-y := virtio_fs.o
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+index 5cd7bd9b9c..d7b05e7561 100644
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -77,6 +77,15 @@ struct fuse_submount_lookup {
+ 	struct fuse_forget_link *forget;
+ };
+ 
++/** Container for data related to mapping to backing file */
++struct fuse_backing {
++	struct file *file;
++
++	/** refcount */
++	refcount_t count;
++	struct rcu_head rcu;
++};
++
+ /** FUSE inode */
+ struct fuse_inode {
+ 	/** Inode data */
+@@ -180,8 +189,10 @@ struct fuse_inode {
+ #endif
+ 	/** Submount specific lookup tracking */
+ 	struct fuse_submount_lookup *submount_lookup;
+-
+-	KABI_RESERVE(1)
++#ifdef CONFIG_FUSE_PASSTHROUGH
++	/** Reference to backing file in passthrough mode */
++	struct fuse_backing *fb;
++#endif
+ };
+ 
+ /** FUSE inode state bits */
+@@ -840,6 +851,12 @@ struct fuse_conn {
+ 	/* Use pages instead of pointer for kernel I/O */
+ 	unsigned int use_pages_for_kvec_io:1;
+ 
++	/** Passthrough support for read/write IO */
++	unsigned int passthrough:1;
++
++	/** Maximum stack depth for passthrough backing files */
++	int max_stack_depth;
++
+ 	/** The number of requests waiting for completion */
+ 	atomic_t num_waiting;
+ 
+@@ -892,8 +909,6 @@ struct fuse_conn {
+ 
+ 	KABI_RESERVE(1)
+ 	KABI_RESERVE(2)
+-	KABI_RESERVE(3)
+-	KABI_RESERVE(4)
+ };
+ 
+ /*
+@@ -1384,4 +1399,27 @@ struct fuse_file *fuse_file_open(struct fuse_mount *fm, u64 nodeid,
+ void fuse_file_release(struct inode *inode, struct fuse_file *ff,
+ 		       unsigned int open_flags, fl_owner_t id, bool isdir);
+ 
++/* passthrough.c */
++static inline struct fuse_backing *fuse_inode_backing(struct fuse_inode *fi)
++{
++#ifdef CONFIG_FUSE_PASSTHROUGH
++	return READ_ONCE(fi->fb);
++#else
++	return NULL;
++#endif
++}
++
++static inline struct fuse_backing *fuse_inode_backing_set(struct fuse_inode *fi,
++							  struct fuse_backing *fb)
++{
++#ifdef CONFIG_FUSE_PASSTHROUGH
++	return xchg(&fi->fb, fb);
++#else
++	return NULL;
++#endif
++}
++
++struct fuse_backing *fuse_backing_get(struct fuse_backing *fb);
++void fuse_backing_put(struct fuse_backing *fb);
++
+ #endif /* _FS_FUSE_I_H */
+diff --git a/fs/fuse/inode.c b/fs/fuse/inode.c
+index 735abf426a..89e77b1368 100644
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -111,6 +111,9 @@ static struct inode *fuse_alloc_inode(struct super_block *sb)
+ 	if (IS_ENABLED(CONFIG_FUSE_DAX) && !fuse_dax_inode_alloc(sb, fi))
+ 		goto out_free_forget;
+ 
++	if (IS_ENABLED(CONFIG_FUSE_PASSTHROUGH))
++		fuse_inode_backing_set(fi, NULL);
++
+ 	return &fi->inode;
+ 
+ out_free_forget:
+@@ -129,6 +132,9 @@ static void fuse_free_inode(struct inode *inode)
+ #ifdef CONFIG_FUSE_DAX
+ 	kfree(fi->dax);
+ #endif
++	if (IS_ENABLED(CONFIG_FUSE_PASSTHROUGH))
++		fuse_backing_put(fuse_inode_backing(fi));
++
+ 	kmem_cache_free(fuse_inode_cachep, fi);
+ }
+ 
+@@ -1312,6 +1318,24 @@ static void process_init_reply(struct fuse_mount *fm, struct fuse_args *args,
+ 				fc->create_supp_group = 1;
+ 			if (flags & FUSE_DIRECT_IO_ALLOW_MMAP)
+ 				fc->direct_io_allow_mmap = 1;
++			/*
++			 * max_stack_depth is the max stack depth of FUSE fs,
++			 * so it has to be at least 1 to support passthrough
++			 * to backing files.
++			 *
++			 * with max_stack_depth > 1, the backing files can be
++			 * on a stacked fs (e.g. overlayfs) themselves and with
++			 * max_stack_depth == 1, FUSE fs can be stacked as the
++			 * underlying fs of a stacked fs (e.g. overlayfs).
++			 */
++			if (IS_ENABLED(CONFIG_FUSE_PASSTHROUGH) &&
++			    (flags & FUSE_PASSTHROUGH) &&
++			    arg->max_stack_depth > 0 &&
++			    arg->max_stack_depth <= FILESYSTEM_MAX_STACK_DEPTH) {
++				fc->passthrough = 1;
++				fc->max_stack_depth = arg->max_stack_depth;
++				fm->sb->s_stack_depth = arg->max_stack_depth;
++			}
+ 		} else {
+ 			ra_pages = fc->max_read / PAGE_SIZE;
+ 			fc->no_lock = 1;
+@@ -1367,6 +1391,8 @@ void fuse_send_init(struct fuse_mount *fm)
+ #endif
+ 	if (fm->fc->auto_submounts)
+ 		flags |= FUSE_SUBMOUNTS;
++	if (IS_ENABLED(CONFIG_FUSE_PASSTHROUGH))
++		flags |= FUSE_PASSTHROUGH;
+ 
+ 	ia->in.flags = flags;
+ 	ia->in.flags2 = flags >> 32;
+diff --git a/fs/fuse/passthrough.c b/fs/fuse/passthrough.c
+new file mode 100644
+index 0000000000..e8639c0a9a
+--- /dev/null
++++ b/fs/fuse/passthrough.c
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * FUSE passthrough to backing file.
++ *
++ * Copyright (c) 2023 CTERA Networks.
++ */
++
++#include "fuse_i.h"
++
++#include <linux/file.h>
++
++struct fuse_backing *fuse_backing_get(struct fuse_backing *fb)
++{
++	if (fb && refcount_inc_not_zero(&fb->count))
++		return fb;
++	return NULL;
++}
++
++static void fuse_backing_free(struct fuse_backing *fb)
++{
++	if (fb->file)
++		fput(fb->file);
++	kfree_rcu(fb, rcu);
++}
++
++void fuse_backing_put(struct fuse_backing *fb)
++{
++	if (fb && refcount_dec_and_test(&fb->count))
++		fuse_backing_free(fb);
++}
+diff --git a/include/uapi/linux/fuse.h b/include/uapi/linux/fuse.h
+index e7418d15fe..7bb6219cfd 100644
+--- a/include/uapi/linux/fuse.h
++++ b/include/uapi/linux/fuse.h
+@@ -211,6 +211,10 @@
+  *  7.39
+  *  - add FUSE_DIRECT_IO_ALLOW_MMAP
+  *  - add FUSE_STATX and related structures
++ *
++ *  7.40
++ *  - add max_stack_depth to fuse_init_out, add FUSE_PASSTHROUGH init flag
++ *  - add backing_id to fuse_open_out, add FOPEN_PASSTHROUGH open flag
+  */
+ 
+ #ifndef _LINUX_FUSE_H
+@@ -246,7 +250,7 @@
+ #define FUSE_KERNEL_VERSION 7
+ 
+ /** Minor version number of this interface */
+-#define FUSE_KERNEL_MINOR_VERSION 39
++#define FUSE_KERNEL_MINOR_VERSION 40
+ 
+ /** The node ID of the root inode */
+ #define FUSE_ROOT_ID 1
+@@ -353,6 +357,7 @@ struct fuse_file_lock {
+  * FOPEN_STREAM: the file is stream-like (no file position at all)
+  * FOPEN_NOFLUSH: don't flush data cache on close (unless FUSE_WRITEBACK_CACHE)
+  * FOPEN_PARALLEL_DIRECT_WRITES: Allow concurrent direct writes on the same inode
++ * FOPEN_PASSTHROUGH: passthrough read/write io for this open file
+  */
+ #define FOPEN_DIRECT_IO		(1 << 0)
+ #define FOPEN_KEEP_CACHE	(1 << 1)
+@@ -361,6 +366,7 @@ struct fuse_file_lock {
+ #define FOPEN_STREAM		(1 << 4)
+ #define FOPEN_NOFLUSH		(1 << 5)
+ #define FOPEN_PARALLEL_DIRECT_WRITES	(1 << 6)
++#define FOPEN_PASSTHROUGH	(1 << 7)
+ 
+ /**
+  * INIT request/reply flags
+@@ -449,6 +455,7 @@ struct fuse_file_lock {
+ #define FUSE_CREATE_SUPP_GROUP	(1ULL << 34)
+ #define FUSE_HAS_EXPIRE_ONLY	(1ULL << 35)
+ #define FUSE_DIRECT_IO_ALLOW_MMAP (1ULL << 36)
++#define FUSE_PASSTHROUGH	(1ULL << 37)
+ 
+ /* Obsolete alias for FUSE_DIRECT_IO_ALLOW_MMAP */
+ #define FUSE_DIRECT_IO_RELAX	FUSE_DIRECT_IO_ALLOW_MMAP
+@@ -761,7 +768,7 @@ struct fuse_create_in {
+ struct fuse_open_out {
+ 	uint64_t	fh;
+ 	uint32_t	open_flags;
+-	uint32_t	padding;
++	int32_t		backing_id;
+ };
+ 
+ struct fuse_release_in {
+@@ -877,7 +884,8 @@ struct fuse_init_out {
+ 	uint16_t	max_pages;
+ 	uint16_t	map_alignment;
+ 	uint32_t	flags2;
+-	uint32_t	unused[7];
++	uint32_t	max_stack_depth;
++	uint32_t	unused[6];
+ };
+ 
+ #define CUSE_INIT_INFO_MAX 4096
+-- 
+2.54.0
+

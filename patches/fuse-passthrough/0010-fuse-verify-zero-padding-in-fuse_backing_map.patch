@@ -1,0 +1,41 @@
+From e4339b08e0f1720c615a2f181b6faf5a1d8959ff Mon Sep 17 00:00:00 2001
+From: Amir Goldstein <amir73il@gmail.com>
+Date: Tue, 6 May 2025 09:26:36 +0800
+Subject: [PATCH 10/20] fuse: verify zero padding in fuse_backing_map
+
+mainline inclusion
+from mainline-v6.9
+commit aef8acd79f363ced098cd3bcde0a5978a52607ad
+category: bugfix
+bugzilla: https://gitee.com/src-openeuler/kernel/issues/IBHLU4
+
+Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=aef8acd79f363ced098cd3bcde0a5978a52607ad
+
+--------------------------------
+
+To allow us extending the interface in the future.
+
+Fixes: 44350256ab94 ("fuse: implement ioctls to manage backing files")
+Signed-off-by: Amir Goldstein <amir73il@gmail.com>
+Signed-off-by: Miklos Szeredi <mszeredi@redhat.com>
+Signed-off-by: Yifan Qiao <qiaoyifan4@huawei.com>
+---
+ fs/fuse/passthrough.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/fs/fuse/passthrough.c b/fs/fuse/passthrough.c
+index 1567f03238..9666d13884 100644
+--- a/fs/fuse/passthrough.c
++++ b/fs/fuse/passthrough.c
+@@ -225,7 +225,7 @@ int fuse_backing_open(struct fuse_conn *fc, struct fuse_backing_map *map)
+ 		goto out;
+ 
+ 	res = -EINVAL;
+-	if (map->flags)
++	if (map->flags || map->padding)
+ 		goto out;
+ 
+ 	file = fget(map->fd);
+-- 
+2.54.0
+

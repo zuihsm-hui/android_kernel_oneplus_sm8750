@@ -1,0 +1,46 @@
+From 4aa3a5452f499ffe15aa98a350a928fb22df7bfd Mon Sep 17 00:00:00 2001
+From: Amir Goldstein <amir73il@gmail.com>
+Date: Tue, 6 May 2025 09:26:37 +0800
+Subject: [PATCH 11/20] fuse: respect FOPEN_KEEP_CACHE on opendir
+
+mainline inclusion
+from mainline-v6.13-rc7
+commit 03f275adb8fbd7b4ebe96a1ad5044d8e602692dc
+category: bugfix
+bugzilla: https://gitee.com/src-openeuler/kernel/issues/IBHLU4
+
+Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=03f275adb8fbd7b4ebe96a1ad5044d8e602692dc
+
+--------------------------------
+
+The re-factoring of fuse_dir_open() missed the need to invalidate
+directory inode page cache with open flag FOPEN_KEEP_CACHE.
+
+Fixes: 7de64d521bf92 ("fuse: break up fuse_open_common()")
+Reported-by: Prince Kumar <princer@google.com>
+Closes: https://lore.kernel.org/linux-fsdevel/CAEW=TRr7CYb4LtsvQPLj-zx5Y+EYBmGfM24SuzwyDoGVNoKm7w@mail.gmail.com/
+Signed-off-by: Amir Goldstein <amir73il@gmail.com>
+Link: https://lore.kernel.org/r/20250101130037.96680-1-amir73il@gmail.com
+Reviewed-by: Bernd Schubert <bernd.schubert@fastmail.fm>
+Signed-off-by: Christian Brauner <brauner@kernel.org>
+Signed-off-by: Yifan Qiao <qiaoyifan4@huawei.com>
+---
+ fs/fuse/dir.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/fs/fuse/dir.c b/fs/fuse/dir.c
+index 1ca3d3643d..2b55671425 100644
+--- a/fs/fuse/dir.c
++++ b/fs/fuse/dir.c
+@@ -1660,6 +1660,8 @@ static int fuse_dir_open(struct inode *inode, struct file *file)
+ 		 */
+ 		if (ff->open_flags & (FOPEN_STREAM | FOPEN_NONSEEKABLE))
+ 			nonseekable_open(inode, file);
++		if (!(ff->open_flags & FOPEN_KEEP_CACHE))
++			invalidate_inode_pages2(inode->i_mapping);
+ 	}
+ 
+ 	return err;
+-- 
+2.54.0
+

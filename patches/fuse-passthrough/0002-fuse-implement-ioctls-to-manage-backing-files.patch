@@ -1,0 +1,348 @@
+From c2d091f5fcf68cd96dc1230872d7eb20873301c2 Mon Sep 17 00:00:00 2001
+From: Amir Goldstein <amir73il@gmail.com>
+Date: Tue, 6 May 2025 09:26:28 +0800
+Subject: [PATCH 02/20] fuse: implement ioctls to manage backing files
+
+mainline inclusion
+from mainline-v6.9-rc1
+commit 44350256ab943d424d70aa60a34f45060b3a36e8
+category: feature
+bugzilla: https://gitee.com/src-openeuler/kernel/issues/IBHLU4
+
+Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=44350256ab943d424d70aa60a34f45060b3a36e8
+
+--------------------------------
+
+FUSE server calls the FUSE_DEV_IOC_BACKING_OPEN ioctl with a backing file
+descriptor.  If the call succeeds, a backing file identifier is returned.
+
+A later change will be using this backing file id in a reply to OPEN
+request with the flag FOPEN_PASSTHROUGH to setup passthrough of file
+operations on the open FUSE file to the backing file.
+
+The FUSE server should call FUSE_DEV_IOC_BACKING_CLOSE ioctl to close the
+backing file by its id.
+
+This can be done at any time, but if an open reply with FOPEN_PASSTHROUGH
+flag is still in progress, the open may fail if the backing file is
+closed before the fuse file was opened.
+
+Setting up backing files requires a server with CAP_SYS_ADMIN privileges.
+For the backing file to be successfully setup, the backing file must
+implement both read_iter and write_iter file operations.
+
+The limitation on the level of filesystem stacking allowed for the
+backing file is enforced before setting up the backing file.
+
+Signed-off-by: Alessio Balsini <balsini@android.com>
+Signed-off-by: Amir Goldstein <amir73il@gmail.com>
+Signed-off-by: Miklos Szeredi <mszeredi@redhat.com>
+Conflicts:
+	fs/fuse/fuse_i.h
+[Uses kabi_reserve to avoid kabi changes.]
+Signed-off-by: Yifan Qiao <qiaoyifan4@huawei.com>
+---
+ fs/fuse/dev.c             |  41 ++++++++++++
+ fs/fuse/fuse_i.h          |  11 ++-
+ fs/fuse/inode.c           |   5 ++
+ fs/fuse/passthrough.c     | 136 ++++++++++++++++++++++++++++++++++++++
+ include/uapi/linux/fuse.h |   9 +++
+ 5 files changed, 201 insertions(+), 1 deletion(-)
+
+diff --git a/fs/fuse/dev.c b/fs/fuse/dev.c
+index 117221e4d9..3c842286cd 100644
+--- a/fs/fuse/dev.c
++++ b/fs/fuse/dev.c
+@@ -2285,6 +2285,41 @@ static long fuse_dev_ioctl_clone(struct file *file, __u32 __user *argp)
+ 	return res;
+ }
+ 
++static long fuse_dev_ioctl_backing_open(struct file *file,
++					struct fuse_backing_map __user *argp)
++{
++	struct fuse_dev *fud = fuse_get_dev(file);
++	struct fuse_backing_map map;
++
++	if (!fud)
++		return -EPERM;
++
++	if (!IS_ENABLED(CONFIG_FUSE_PASSTHROUGH))
++		return -EOPNOTSUPP;
++
++	if (copy_from_user(&map, argp, sizeof(map)))
++		return -EFAULT;
++
++	return fuse_backing_open(fud->fc, &map);
++}
++
++static long fuse_dev_ioctl_backing_close(struct file *file, __u32 __user *argp)
++{
++	struct fuse_dev *fud = fuse_get_dev(file);
++	int backing_id;
++
++	if (!fud)
++		return -EPERM;
++
++	if (!IS_ENABLED(CONFIG_FUSE_PASSTHROUGH))
++		return -EOPNOTSUPP;
++
++	if (get_user(backing_id, argp))
++		return -EFAULT;
++
++	return fuse_backing_close(fud->fc, backing_id);
++}
++
+ static long fuse_dev_ioctl(struct file *file, unsigned int cmd,
+ 			   unsigned long arg)
+ {
+@@ -2294,6 +2329,12 @@ static long fuse_dev_ioctl(struct file *file, unsigned int cmd,
+ 	case FUSE_DEV_IOC_CLONE:
+ 		return fuse_dev_ioctl_clone(file, argp);
+ 
++	case FUSE_DEV_IOC_BACKING_OPEN:
++		return fuse_dev_ioctl_backing_open(file, argp);
++
++	case FUSE_DEV_IOC_BACKING_CLOSE:
++		return fuse_dev_ioctl_backing_close(file, argp);
++
+ 	default:
+ 		return -ENOTTY;
+ 	}
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+index d7b05e7561..16d19fdd05 100644
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -80,6 +80,7 @@ struct fuse_submount_lookup {
+ /** Container for data related to mapping to backing file */
+ struct fuse_backing {
+ 	struct file *file;
++	struct cred *cred;
+ 
+ 	/** refcount */
+ 	refcount_t count;
+@@ -907,8 +908,12 @@ struct fuse_conn {
+ 	/* New writepages go into this bucket */
+ 	struct fuse_sync_bucket __rcu *curr_bucket;
+ 
++#ifdef CONFIG_FUSE_PASSTHROUGH
++	/** IDR for backing files ids */
++	struct idr backing_files_map;
++#endif
++
+ 	KABI_RESERVE(1)
+-	KABI_RESERVE(2)
+ };
+ 
+ /*
+@@ -1421,5 +1426,9 @@ static inline struct fuse_backing *fuse_inode_backing_set(struct fuse_inode *fi,
+ 
+ struct fuse_backing *fuse_backing_get(struct fuse_backing *fb);
+ void fuse_backing_put(struct fuse_backing *fb);
++void fuse_backing_files_init(struct fuse_conn *fc);
++void fuse_backing_files_free(struct fuse_conn *fc);
++int fuse_backing_open(struct fuse_conn *fc, struct fuse_backing_map *map);
++int fuse_backing_close(struct fuse_conn *fc, int backing_id);
+ 
+ #endif /* _FS_FUSE_I_H */
+diff --git a/fs/fuse/inode.c b/fs/fuse/inode.c
+index 89e77b1368..d5f9526b76 100644
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -952,6 +952,9 @@ void fuse_conn_init(struct fuse_conn *fc, struct fuse_mount *fm,
+ 	fc->max_pages = FUSE_DEFAULT_MAX_PAGES_PER_REQ;
+ 	fc->max_pages_limit = FUSE_MAX_MAX_PAGES;
+ 
++	if (IS_ENABLED(CONFIG_FUSE_PASSTHROUGH))
++		fuse_backing_files_init(fc);
++
+ 	INIT_LIST_HEAD(&fc->mounts);
+ 	list_add(&fm->fc_entry, &fc->mounts);
+ 	fm->fc = fc;
+@@ -982,6 +985,8 @@ void fuse_conn_put(struct fuse_conn *fc)
+ 			WARN_ON(atomic_read(&bucket->count) != 1);
+ 			kfree(bucket);
+ 		}
++		if (IS_ENABLED(CONFIG_FUSE_PASSTHROUGH))
++			fuse_backing_files_free(fc);
+ 		call_rcu(&fc->rcu, delayed_release);
+ 	}
+ }
+diff --git a/fs/fuse/passthrough.c b/fs/fuse/passthrough.c
+index e8639c0a9a..7ec92a54c2 100644
+--- a/fs/fuse/passthrough.c
++++ b/fs/fuse/passthrough.c
+@@ -18,8 +18,11 @@ struct fuse_backing *fuse_backing_get(struct fuse_backing *fb)
+ 
+ static void fuse_backing_free(struct fuse_backing *fb)
+ {
++	pr_debug("%s: fb=0x%p\n", __func__, fb);
++
+ 	if (fb->file)
+ 		fput(fb->file);
++	put_cred(fb->cred);
+ 	kfree_rcu(fb, rcu);
+ }
+ 
+@@ -28,3 +31,136 @@ void fuse_backing_put(struct fuse_backing *fb)
+ 	if (fb && refcount_dec_and_test(&fb->count))
+ 		fuse_backing_free(fb);
+ }
++
++void fuse_backing_files_init(struct fuse_conn *fc)
++{
++	idr_init(&fc->backing_files_map);
++}
++
++static int fuse_backing_id_alloc(struct fuse_conn *fc, struct fuse_backing *fb)
++{
++	int id;
++
++	idr_preload(GFP_KERNEL);
++	spin_lock(&fc->lock);
++	/* FIXME: xarray might be space inefficient */
++	id = idr_alloc_cyclic(&fc->backing_files_map, fb, 1, 0, GFP_ATOMIC);
++	spin_unlock(&fc->lock);
++	idr_preload_end();
++
++	WARN_ON_ONCE(id == 0);
++	return id;
++}
++
++static struct fuse_backing *fuse_backing_id_remove(struct fuse_conn *fc,
++						   int id)
++{
++	struct fuse_backing *fb;
++
++	spin_lock(&fc->lock);
++	fb = idr_remove(&fc->backing_files_map, id);
++	spin_unlock(&fc->lock);
++
++	return fb;
++}
++
++static int fuse_backing_id_free(int id, void *p, void *data)
++{
++	struct fuse_backing *fb = p;
++
++	WARN_ON_ONCE(refcount_read(&fb->count) != 1);
++	fuse_backing_free(fb);
++	return 0;
++}
++
++void fuse_backing_files_free(struct fuse_conn *fc)
++{
++	idr_for_each(&fc->backing_files_map, fuse_backing_id_free, NULL);
++	idr_destroy(&fc->backing_files_map);
++}
++
++int fuse_backing_open(struct fuse_conn *fc, struct fuse_backing_map *map)
++{
++	struct file *file;
++	struct super_block *backing_sb;
++	struct fuse_backing *fb = NULL;
++	int res;
++
++	pr_debug("%s: fd=%d flags=0x%x\n", __func__, map->fd, map->flags);
++
++	/* TODO: relax CAP_SYS_ADMIN once backing files are visible to lsof */
++	res = -EPERM;
++	if (!fc->passthrough || !capable(CAP_SYS_ADMIN))
++		goto out;
++
++	res = -EINVAL;
++	if (map->flags)
++		goto out;
++
++	file = fget(map->fd);
++	res = -EBADF;
++	if (!file)
++		goto out;
++
++	res = -EOPNOTSUPP;
++	if (!file->f_op->read_iter || !file->f_op->write_iter)
++		goto out_fput;
++
++	backing_sb = file_inode(file)->i_sb;
++	res = -ELOOP;
++	if (backing_sb->s_stack_depth >= fc->max_stack_depth)
++		goto out_fput;
++
++	fb = kmalloc(sizeof(struct fuse_backing), GFP_KERNEL);
++	res = -ENOMEM;
++	if (!fb)
++		goto out_fput;
++
++	fb->file = file;
++	fb->cred = prepare_creds();
++	refcount_set(&fb->count, 1);
++
++	res = fuse_backing_id_alloc(fc, fb);
++	if (res < 0) {
++		fuse_backing_free(fb);
++		fb = NULL;
++	}
++
++out:
++	pr_debug("%s: fb=0x%p, ret=%i\n", __func__, fb, res);
++
++	return res;
++
++out_fput:
++	fput(file);
++	goto out;
++}
++
++int fuse_backing_close(struct fuse_conn *fc, int backing_id)
++{
++	struct fuse_backing *fb = NULL;
++	int err;
++
++	pr_debug("%s: backing_id=%d\n", __func__, backing_id);
++
++	/* TODO: relax CAP_SYS_ADMIN once backing files are visible to lsof */
++	err = -EPERM;
++	if (!fc->passthrough || !capable(CAP_SYS_ADMIN))
++		goto out;
++
++	err = -EINVAL;
++	if (backing_id <= 0)
++		goto out;
++
++	err = -ENOENT;
++	fb = fuse_backing_id_remove(fc, backing_id);
++	if (!fb)
++		goto out;
++
++	fuse_backing_put(fb);
++	err = 0;
++out:
++	pr_debug("%s: fb=0x%p, err=%i\n", __func__, fb, err);
++
++	return err;
++}
+diff --git a/include/uapi/linux/fuse.h b/include/uapi/linux/fuse.h
+index 7bb6219cfd..1162a47b6a 100644
+--- a/include/uapi/linux/fuse.h
++++ b/include/uapi/linux/fuse.h
+@@ -1057,9 +1057,18 @@ struct fuse_notify_retrieve_in {
+ 	uint64_t	dummy4;
+ };
+ 
++struct fuse_backing_map {
++	int32_t		fd;
++	uint32_t	flags;
++	uint64_t	padding;
++};
++
+ /* Device ioctls: */
+ #define FUSE_DEV_IOC_MAGIC		229
+ #define FUSE_DEV_IOC_CLONE		_IOR(FUSE_DEV_IOC_MAGIC, 0, uint32_t)
++#define FUSE_DEV_IOC_BACKING_OPEN	_IOW(FUSE_DEV_IOC_MAGIC, 1, \
++					     struct fuse_backing_map)
++#define FUSE_DEV_IOC_BACKING_CLOSE	_IOW(FUSE_DEV_IOC_MAGIC, 2, uint32_t)
+ 
+ struct fuse_lseek_in {
+ 	uint64_t	fh;
+-- 
+2.54.0
+

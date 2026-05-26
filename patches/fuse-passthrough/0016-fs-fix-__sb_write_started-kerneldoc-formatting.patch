@@ -1,0 +1,58 @@
+From aa60e10c6016483527d1ecde21c3c16a3affb06d Mon Sep 17 00:00:00 2001
+From: Vegard Nossum <vegard.nossum@oracle.com>
+Date: Tue, 6 May 2025 09:26:42 +0800
+Subject: [PATCH 16/20] fs: fix __sb_write_started() kerneldoc formatting
+
+mainline inclusion
+from mainline-v6.8-rc1
+commit c39e2ae3943d4ee278af4e1b1dcfd5946da1089b
+category: bugfix
+bugzilla: https://gitee.com/src-openeuler/kernel/issues/IBHLU4
+
+Reference: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=c39e2ae3943d4ee278af4e1b1dcfd5946da1089b
+
+--------------------------------
+
+When running 'make htmldocs', I see the following warning:
+
+  Documentation/filesystems/api-summary:14: ./include/linux/fs.h:1659: WARNING: Definition list ends without a blank line; unexpected unindent.
+
+The official guidance [1] seems to be to use lists, which will prevent
+both the "unexpected unindent" warning as well as ensure that each line
+is formatted on a separate line in the HTML output instead of being
+all considered a single paragraph.
+
+[1]: https://docs.kernel.org/doc-guide/kernel-doc.html#return-values
+
+Fixes: 8802e580ee64 ("fs: create __sb_write_started() helper")
+Cc: Amir Goldstein <amir73il@gmail.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+Cc: Jan Kara <jack@suse.cz>
+Signed-off-by: Vegard Nossum <vegard.nossum@oracle.com>
+Link: https://lore.kernel.org/r/20231228100608.3123987-1-vegard.nossum@oracle.com
+Signed-off-by: Christian Brauner <brauner@kernel.org>
+Signed-off-by: Yifan Qiao <qiaoyifan4@huawei.com>
+---
+ include/linux/fs.h | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+index d2b0534fe8..d0a1537049 100644
+--- a/include/linux/fs.h
++++ b/include/linux/fs.h
+@@ -1696,9 +1696,9 @@ static inline bool __sb_start_write_trylock(struct super_block *sb, int level)
+  * @sb: the super we write to
+  * @level: the freeze level
+  *
+- * > 0 sb freeze level is held
+- *   0 sb freeze level is not held
+- * < 0 !CONFIG_LOCKDEP/LOCK_STATE_UNKNOWN
++ * * > 0 - sb freeze level is held
++ * *   0 - sb freeze level is not held
++ * * < 0 - !CONFIG_LOCKDEP/LOCK_STATE_UNKNOWN
+  */
+ static inline int __sb_write_started(const struct super_block *sb, int level)
+ {
+-- 
+2.54.0
+
