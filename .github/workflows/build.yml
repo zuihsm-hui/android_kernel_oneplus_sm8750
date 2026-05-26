@@ -66,7 +66,7 @@ jobs:
           sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
       # ------------------------------------------------------------
-      # 步骤 1：只提取 FUSE Passthrough 补丁（shallow fetch）
+      # 步骤 1：浅拉取 openEuler 仓库并提取 FUSE Passthrough 补丁文件
       # ------------------------------------------------------------
       - name: Extract FUSE Passthrough patches (shallow fetch)
         run: |
@@ -81,48 +81,66 @@ jobs:
 
           # 如果补丁文件已存在，跳过提取
           if ls "$PATCH_DIR"/*.patch 1> /dev/null 2>&1; then
-            echo "Patches already extracted, skipping."
+            echo "Patch files already exist, skipping extraction."
             exit 0
           fi
 
-          echo "Fetching only necessary commits..."
+          echo "Fetching only necessary commits from openEuler..."
           FIRST_COMMIT="8569e2ba66d5971f461a85d3344b1437f6d6c3ee"
           LAST_COMMIT="fa97c7232a31874f42bc57eec10dc5ad19f3e447"
 
           git remote add openeuler https://gitee.com/openeuler/kernel.git 2>/dev/null || true
           git fetch openeuler "$FIRST_COMMIT" "$LAST_COMMIT" --depth=100 --no-tags
 
-          git cat-file -e "$FIRST_COMMIT" && git cat-file -e "$LAST_COMMIT" || { echo "Failed to fetch commits"; exit 1; }
+          git cat-file -e "$FIRST_COMMIT" && git cat-file -e "$LAST_COMMIT" || {
+            echo "Failed to fetch required commits from openEuler"
+            exit 1
+          }
 
           git format-patch ${FIRST_COMMIT}^..${LAST_COMMIT} -o "$PATCH_DIR"
-          echo "Extracted $(ls "$PATCH_DIR"/*.patch | wc -l) patches."
+          echo "Extracted $(ls "$PATCH_DIR"/*.patch | wc -l) patch files."
 
       # ------------------------------------------------------------
-      # 步骤 2：将补丁文件强制添加到仓库（忽略 .gitignore）
+      # 步骤 2：强制添加补丁文件到仓库（绕过 .gitignore）
       # ------------------------------------------------------------
       - name: Commit patch files to repository
         run: |
           cd ${{ env.KERNEL_DIR }}
           git add -f patches/fuse-passthrough/
           if git diff --cached --quiet; then
-            echo "No new patches to commit"
+            echo "No new patch files to commit."
           else
             git commit -m "Add FUSE Passthrough patch files from openEuler"
             git push origin HEAD:${{ github.event.inputs.branch }}
           fi
 
       # ------------------------------------------------------------
-      # 步骤 3：应用补丁（如果尚未应用）
+      # 步骤 3：应用补丁（使用 cherry-pick 自动解决冲突）
       # ------------------------------------------------------------
-      - name: Apply FUSE Passthrough patches
+      - name: Apply FUSE Passthrough patches (cherry-pick)
         run: |
           cd ${{ env.KERNEL_DIR }}
+          # 清理可能残留的 am/cherry-pick 状态
+          git am --abort 2>/dev/null || true
+          git cherry-pick --abort 2>/dev/null || true
+          git reset --hard HEAD
+
           if grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig 2>/dev/null; then
-            echo "Patches already applied."
-          else
-            echo "Applying patches..."
-            git am patches/fuse-passthrough/*.patch
+            echo "FUSE Passthrough patches already applied."
+            exit 0
           fi
+
+          echo "Applying patches via cherry-pick..."
+          FIRST_COMMIT="8569e2ba66d5971f461a85d3344b1437f6d6c3ee"
+          LAST_COMMIT="fa97c7232a31874f42bc57eec10dc5ad19f3e447"
+
+          # -X theirs 以补丁内容为准，自动解决冲突
+          git cherry-pick -X theirs ${FIRST_COMMIT}^..${LAST_COMMIT} || {
+            echo "Cherry-pick failed, aborting."
+            git cherry-pick --abort
+            exit 1
+          }
+          echo "Cherry-pick applied successfully."
 
       # ------------------------------------------------------------
       # 步骤 4：注释缺失的 Kconfig / Makefile 引用
@@ -189,7 +207,7 @@ jobs:
           cd ${{ env.KERNEL_DIR }}
           git add -A
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "No annotation changes to commit."
           else
             git commit -m "Auto-comment missing Kconfig/Makefile references [skip ci]"
             git push origin HEAD:${{ github.event.inputs.branch }}
