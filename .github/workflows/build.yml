@@ -66,94 +66,47 @@ jobs:
           sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
       # ------------------------------------------------------------
-      # 步骤 1：浅拉取 openEuler 两个关键 commit（并保留中间历史）
+      # 步骤 1：提取补丁文件（使用本地文件，避免远程拉取）
       # ------------------------------------------------------------
-      - name: Extract FUSE Passthrough patches (shallow fetch)
+      - name: Extract FUSE Passthrough patches (already committed)
         run: |
           cd ${{ env.KERNEL_DIR }}
-          git config --global user.email "actions@github.com"
-          git config --global user.name "GitHub Actions"
-          git config --global http.lowSpeedLimit 1000
-          git config --global http.lowSpeedTime 30
-
-          PATCH_DIR="patches/fuse-passthrough"
-          mkdir -p "$PATCH_DIR"
-
-          if ls "$PATCH_DIR"/*.patch 1> /dev/null 2>&1; then
-            echo "Patch files already exist, skipping extraction."
-            exit 0
-          fi
-
-          echo "Fetching only necessary commits from openEuler..."
-          FIRST_COMMIT="8569e2ba66d5971f461a85d3344b1437f6d6c3ee"
-          LAST_COMMIT="fa97c7232a31874f42bc57eec10dc5ad19f3e447"
-
-          git remote add openeuler https://gitee.com/openeuler/kernel.git 2>/dev/null || true
-          # 拉取两个 commit，并保留 100 深度以包含中间历史
-          git fetch openeuler "$FIRST_COMMIT" "$LAST_COMMIT" --depth=100 --no-tags
-
-          git cat-file -e "$FIRST_COMMIT" && git cat-file -e "$LAST_COMMIT" || {
-            echo "Failed to fetch required commits from openEuler"
-            exit 1
-          }
-
-          git format-patch ${FIRST_COMMIT}^..${LAST_COMMIT} -o "$PATCH_DIR"
-          echo "Extracted $(ls "$PATCH_DIR"/*.patch | wc -l) patch files."
-
-      # ------------------------------------------------------------
-      # 步骤 2：强制添加补丁文件到仓库（绕过 .gitignore）
-      # ------------------------------------------------------------
-      - name: Commit patch files to repository
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-          git add -f patches/fuse-passthrough/
-          if git diff --cached --quiet; then
-            echo "No new patch files to commit."
+          if [ -d patches/fuse-passthrough ] && ls patches/fuse-passthrough/*.patch 1>/dev/null 2>&1; then
+            echo "Patch files found in repository."
           else
-            git commit -m "Add FUSE Passthrough patch files from openEuler"
-            git push origin HEAD:${{ github.event.inputs.branch }}
+            echo "No patch files found, skipping FUSE Passthrough enhancement."
           fi
 
       # ------------------------------------------------------------
-      # 步骤 3：逐个 cherry-pick 应用补丁（解决范围引用错误）
+      # 步骤 2：尝试应用补丁（如果失败则跳过）
       # ------------------------------------------------------------
-      - name: Apply FUSE Passthrough patches (cherry-pick individual commits)
+      - name: Try to apply FUSE Passthrough patches
+        id: apply_patches
         run: |
           cd ${{ env.KERNEL_DIR }}
-          git am --abort 2>/dev/null || true
-          git cherry-pick --abort 2>/dev/null || true
           git reset --hard HEAD
+          git clean -fd  # 清理未跟踪文件
 
-          if grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig 2>/dev/null; then
-            echo "FUSE Passthrough patches already applied."
-            exit 0
+          if ! grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig 2>/dev/null; then
+            echo "Attempting to apply FUSE Passthrough patches..."
+            set +e
+            git am patches/fuse-passthrough/*.patch 2>&1 | tee /tmp/am_log.txt
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+              echo "Patch application failed. Aborting and cleaning up."
+              git am --abort 2>/dev/null || true
+              echo "FUSE_PASSTHROUGH_APPLIED=no" >> $GITHUB_OUTPUT
+            else
+              echo "Patches applied successfully."
+              echo "FUSE_PASSTHROUGH_APPLIED=yes" >> $GITHUB_OUTPUT
+            fi
+            set -e
+          else
+            echo "Patches already applied."
+            echo "FUSE_PASSTHROUGH_APPLIED=yes" >> $GITHUB_OUTPUT
           fi
 
-          FIRST_COMMIT="8569e2ba66d5971f461a85d3344b1437f6d6c3ee"
-          LAST_COMMIT="fa97c7232a31874f42bc57eec10dc5ad19f3e447"
-
-          echo "Cherry-picking first commit..."
-          git cherry-pick -X theirs ${FIRST_COMMIT} || {
-            echo "Failed to cherry-pick ${FIRST_COMMIT}"
-            git cherry-pick --abort
-            exit 1
-          }
-
-          # 获取中间所有提交的哈希（正序）
-          COMMITS=$(git log ${FIRST_COMMIT}..${LAST_COMMIT} --format=%H --reverse)
-          for commit in $COMMITS; do
-            echo "Cherry-picking $commit..."
-            git cherry-pick -X theirs $commit || {
-              echo "Failed to cherry-pick $commit"
-              git cherry-pick --abort
-              exit 1
-            }
-          done
-
-          echo "All patches applied successfully."
-
       # ------------------------------------------------------------
-      # 步骤 4：注释缺失的 Kconfig / Makefile 引用
+      # 步骤 3：注释缺失的 Kconfig / Makefile 引用
       # ------------------------------------------------------------
       - name: Disable Missing Drivers
         run: |
@@ -210,21 +163,21 @@ jobs:
           echo "=== 缺失引用注释完成 ==="
 
       # ------------------------------------------------------------
-      # 步骤 5：提交注释修改
+      # 步骤 4：提交修改
       # ------------------------------------------------------------
-      - name: Commit annotation changes
+      - name: Commit changes
         run: |
           cd ${{ env.KERNEL_DIR }}
           git add -A
           if git diff --cached --quiet; then
-            echo "No annotation changes to commit."
+            echo "No changes to commit."
           else
-            git commit -m "Auto-comment missing Kconfig/Makefile references [skip ci]"
+            git commit -m "Apply FUSE patches (if possible) & comment missing refs [skip ci]"
             git push origin HEAD:${{ github.event.inputs.branch }}
           fi
 
       # ------------------------------------------------------------
-      # 步骤 6：编译内核
+      # 步骤 5：编译内核（根据补丁状态启用配置）
       # ------------------------------------------------------------
       - name: Build Kernel
         env:
@@ -243,17 +196,21 @@ jobs:
               make olddefconfig
               grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "Failed to enable FUSE_PASSTHROUGH"; exit 1; }
             else
-              echo "Kconfig does NOT support FUSE_PASSTHROUGH, only enabling FUSE_FS..."
+              echo "FUSE Passthrough patches not applied, only enabling FUSE_FS..."
               scripts/config --enable CONFIG_FUSE_FS
               make olddefconfig
+              echo "WARNING: FUSE Passthrough will NOT be available in this kernel."
             fi
+          else
+            scripts/config --enable CONFIG_FUSE_FS
+            make olddefconfig
           fi
 
           make LLVM=1 -j$(nproc) Image.gz dtbs
           ls -lh arch/arm64/boot/Image.gz
 
       # ------------------------------------------------------------
-      # 步骤 7：打包 AnyKernel3
+      # 步骤 6：打包 AnyKernel3
       # ------------------------------------------------------------
       - name: Prepare AnyKernel3
         run: |
