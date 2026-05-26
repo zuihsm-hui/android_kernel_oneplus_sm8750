@@ -1,234 +1,26 @@
-name: Build OnePlus 13 Kernel
+- name: Try to apply FUSE Passthrough patches
+  id: apply_patches
+  run: |
+    cd ${{ env.KERNEL_DIR }}
+    # 清理可能残留的 am 状态
+    git am --abort 2>/dev/null || true
+    git reset --hard HEAD
 
-on:
-  workflow_dispatch:
-    inputs:
-      branch:
-        description: '选择要构建的分支'
-        type: choice
-        options:
-          - main
-          - lineage-22.1
-          - dev
-        default: 'main'
-      enable_fuse_passthrough:
-        description: 'Enable FUSE Passthrough'
-        type: boolean
-        default: true
+    if grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig 2>/dev/null; then
+      echo "FUSE Passthrough patches already applied."
+      echo "FUSE_PASSTHROUGH_APPLIED=yes" >> $GITHUB_OUTPUT
+      exit 0
+    fi
 
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
-          fetch-depth: 1
-          lfs: false
-
-      - name: Set Environment
-        run: |
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "SUBARCH=arm64" >> $GITHUB_ENV
-          echo "KERNEL_DIR=${{ github.workspace }}" >> $GITHUB_ENV
-          echo "AK3_DIR=${{ github.workspace }}/anykernel3" >> $GITHUB_ENV
-
-      - name: Cache Clang
-        id: cache-clang
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/proton-clang
-          key: proton-clang-r563880c
-
-      - name: Download Clang
-        if: steps.cache-clang.outputs.cache-hit != 'true'
-        run: |
-          CLANG_DIR="${{ github.workspace }}/proton-clang"
-          mkdir -p "$CLANG_DIR"
-          curl -L "https://github.com/zuihsm-hui/android_kernel_oneplus_sm8750/releases/download/toolchain-v1/clang-r563880c.tar.gz" | tar xz -C "$CLANG_DIR"
-          rm -f "$CLANG_DIR/bin/ld" "$CLANG_DIR/bin/ld.bfd" "$CLANG_DIR/bin/ld.gold" 2>/dev/null || true
-          chmod +x "$CLANG_DIR/bin/"* 2>/dev/null || true
-
-      - name: Verify Clang
-        run: |
-          echo "CLANG_BIN_DIR=${{ github.workspace }}/proton-clang/bin" >> $GITHUB_ENV
-          "${{ github.workspace }}/proton-clang/bin/clang-21" --version
-
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
-
-      # ------------------------------------------------------------
-      # 步骤 1：提取补丁文件（使用本地文件，避免远程拉取）
-      # ------------------------------------------------------------
-      - name: Extract FUSE Passthrough patches (already committed)
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-          if [ -d patches/fuse-passthrough ] && ls patches/fuse-passthrough/*.patch 1>/dev/null 2>&1; then
-            echo "Patch files found in repository."
-          else
-            echo "No patch files found, skipping FUSE Passthrough enhancement."
-          fi
-
-      # ------------------------------------------------------------
-      # 步骤 2：尝试应用补丁（如果失败则跳过）
-      # ------------------------------------------------------------
-      - name: Try to apply FUSE Passthrough patches
-        id: apply_patches
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-          git reset --hard HEAD
-          git clean -fd  # 清理未跟踪文件
-
-          if ! grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig 2>/dev/null; then
-            echo "Attempting to apply FUSE Passthrough patches..."
-            set +e
-            git am patches/fuse-passthrough/*.patch 2>&1 | tee /tmp/am_log.txt
-            if [ ${PIPESTATUS[0]} -ne 0 ]; then
-              echo "Patch application failed. Aborting and cleaning up."
-              git am --abort 2>/dev/null || true
-              echo "FUSE_PASSTHROUGH_APPLIED=no" >> $GITHUB_OUTPUT
-            else
-              echo "Patches applied successfully."
-              echo "FUSE_PASSTHROUGH_APPLIED=yes" >> $GITHUB_OUTPUT
-            fi
-            set -e
-          else
-            echo "Patches already applied."
-            echo "FUSE_PASSTHROUGH_APPLIED=yes" >> $GITHUB_OUTPUT
-          fi
-
-      # ------------------------------------------------------------
-      # 步骤 3：注释缺失的 Kconfig / Makefile 引用
-      # ------------------------------------------------------------
-      - name: Disable Missing Drivers
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-
-          echo "=== 注释缺失的 Kconfig source 引用 ==="
-          find . -name "Kconfig" -type f 2>/dev/null | while read f; do
-            cp "$f" "$f.bak"
-            while IFS= read -r line; do
-              if echo "$line" | grep -qE '^\s*source\s+"[^"]*"'; then
-                src=$(echo "$line" | sed -E 's/^\s*source\s+"([^"]*)".*/\1/')
-                if [ ! -f "$src" ]; then
-                  echo "# [DISABLED] $line  (missing: $src)" >> "$f.new"
-                else
-                  echo "$line" >> "$f.new"
-                fi
-              else
-                echo "$line" >> "$f.new"
-              fi
-            done < "$f.bak"
-            [ ! -f "$f.new" ] && touch "$f.new"
-            mv "$f.new" "$f"
-            rm "$f.bak"
-          done
-
-          echo "=== 注释缺失的 Makefile obj- 目录引用 ==="
-          find . -name "Makefile" -type f 2>/dev/null | while read f; do
-            dir=$(dirname "$f")
-            cp "$f" "$f.bak"
-            (
-              cd "$dir" || exit 1
-              while IFS= read -r line; do
-                if echo "$line" | grep -qE '^\s*obj-\w+\s*[+:]=\s*.*\/'; then
-                  entry=$(echo "$line" | sed -E 's/^.*[+:]=\s*(.*)\/.*$/\1/' | xargs)
-                  if [ -n "$entry" ] && [ ! -f "$entry/Makefile" ]; then
-                    echo "# [DISABLED] $line  (missing directory: $entry)" >> Makefile.new
-                  else
-                    echo "$line" >> Makefile.new
-                  fi
-                else
-                  echo "$line" >> Makefile.new
-                fi
-              done < Makefile.bak
-            )
-            if [ -f "$dir/Makefile.new" ]; then
-              mv "$dir/Makefile.new" "$f"
-            else
-              touch "$dir/Makefile.new"
-              mv "$dir/Makefile.new" "$f"
-            fi
-            rm "$f.bak"
-          done
-
-          echo "=== 缺失引用注释完成 ==="
-
-      # ------------------------------------------------------------
-      # 步骤 4：提交修改
-      # ------------------------------------------------------------
-      - name: Commit changes
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Apply FUSE patches (if possible) & comment missing refs [skip ci]"
-            git push origin HEAD:${{ github.event.inputs.branch }}
-          fi
-
-      # ------------------------------------------------------------
-      # 步骤 5：编译内核（根据补丁状态启用配置）
-      # ------------------------------------------------------------
-      - name: Build Kernel
-        env:
-          PATH: "${{ env.CLANG_BIN_DIR }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        run: |
-          cd ${{ env.KERNEL_DIR }}
-          make clean || true
-          make mrproper || true
-          make vendor/sun_consolidate.config
-
-          if [[ "${{ inputs.enable_fuse_passthrough }}" == "true" ]]; then
-            if grep -q "config FUSE_PASSTHROUGH" fs/fuse/Kconfig 2>/dev/null; then
-              echo "Kconfig supports FUSE_PASSTHROUGH, enabling..."
-              scripts/config --enable CONFIG_FUSE_FS
-              scripts/config --enable CONFIG_FUSE_PASSTHROUGH
-              make olddefconfig
-              grep -q "CONFIG_FUSE_PASSTHROUGH=y" .config || { echo "Failed to enable FUSE_PASSTHROUGH"; exit 1; }
-            else
-              echo "FUSE Passthrough patches not applied, only enabling FUSE_FS..."
-              scripts/config --enable CONFIG_FUSE_FS
-              make olddefconfig
-              echo "WARNING: FUSE Passthrough will NOT be available in this kernel."
-            fi
-          else
-            scripts/config --enable CONFIG_FUSE_FS
-            make olddefconfig
-          fi
-
-          make LLVM=1 -j$(nproc) Image.gz dtbs
-          ls -lh arch/arm64/boot/Image.gz
-
-      # ------------------------------------------------------------
-      # 步骤 6：打包 AnyKernel3
-      # ------------------------------------------------------------
-      - name: Prepare AnyKernel3
-        run: |
-          test -d "${{ env.AK3_DIR }}/tools" || { echo "AK3 incomplete"; exit 1; }
-          cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz ${{ env.AK3_DIR }}/Image.gz
-          mkdir -p ${{ env.AK3_DIR }}/dtb
-          find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor/qcom/ -name "*.dtb" -exec cp {} ${{ env.AK3_DIR }}/dtb/ \; 2>/dev/null || true
-          find ${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/ -name "*.dtb" -maxdepth 3 -exec cp {} ${{ env.AK3_DIR }}/dtb/ \; 2>/dev/null || true
-          test -f "${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img" && cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/dtbo.img ${{ env.AK3_DIR }}/dtbo.img || true
-
-      - name: Package AnyKernel3
-        run: |
-          cd ${{ env.AK3_DIR }}
-          zip -r9 ../AnyKernel3-OP5D0DL1.zip * -x ".git*" "*.md" "LICENSE" "README*" "*.sh~"
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnyKernel3-OP5D0DL1
-          path: AnyKernel3-OP5D0DL1.zip
-          retention-days: 7
+    echo "Attempting to apply patches from patches/fuse-passthrough..."
+    set +e
+    git -c user.email="actions@github.com" -c user.name="GitHub Actions" am patches/fuse-passthrough/*.patch 2>&1 | tee /tmp/am_log.txt
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+      echo "Patch application failed. Aborting and cleaning up."
+      git am --abort 2>/dev/null || true
+      echo "FUSE_PASSTHROUGH_APPLIED=no" >> $GITHUB_OUTPUT
+    else
+      echo "Patches applied successfully."
+      echo "FUSE_PASSTHROUGH_APPLIED=yes" >> $GITHUB_OUTPUT
+    fi
+    set -e
