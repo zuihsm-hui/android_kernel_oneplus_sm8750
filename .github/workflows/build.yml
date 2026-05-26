@@ -66,7 +66,7 @@ jobs:
           sudo apt-get install -y git ccache automake lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib python3 libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3-pip flex libelf-dev
 
       # ------------------------------------------------------------
-      # 步骤 1：浅拉取 openEuler 仓库并提取 FUSE Passthrough 补丁文件
+      # 步骤 1：浅拉取 openEuler 两个关键 commit（并保留中间历史）
       # ------------------------------------------------------------
       - name: Extract FUSE Passthrough patches (shallow fetch)
         run: |
@@ -79,7 +79,6 @@ jobs:
           PATCH_DIR="patches/fuse-passthrough"
           mkdir -p "$PATCH_DIR"
 
-          # 如果补丁文件已存在，跳过提取
           if ls "$PATCH_DIR"/*.patch 1> /dev/null 2>&1; then
             echo "Patch files already exist, skipping extraction."
             exit 0
@@ -90,6 +89,7 @@ jobs:
           LAST_COMMIT="fa97c7232a31874f42bc57eec10dc5ad19f3e447"
 
           git remote add openeuler https://gitee.com/openeuler/kernel.git 2>/dev/null || true
+          # 拉取两个 commit，并保留 100 深度以包含中间历史
           git fetch openeuler "$FIRST_COMMIT" "$LAST_COMMIT" --depth=100 --no-tags
 
           git cat-file -e "$FIRST_COMMIT" && git cat-file -e "$LAST_COMMIT" || {
@@ -115,12 +115,11 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 步骤 3：应用补丁（使用 cherry-pick 自动解决冲突）
+      # 步骤 3：逐个 cherry-pick 应用补丁（解决范围引用错误）
       # ------------------------------------------------------------
-      - name: Apply FUSE Passthrough patches (cherry-pick)
+      - name: Apply FUSE Passthrough patches (cherry-pick individual commits)
         run: |
           cd ${{ env.KERNEL_DIR }}
-          # 清理可能残留的 am/cherry-pick 状态
           git am --abort 2>/dev/null || true
           git cherry-pick --abort 2>/dev/null || true
           git reset --hard HEAD
@@ -130,17 +129,28 @@ jobs:
             exit 0
           fi
 
-          echo "Applying patches via cherry-pick..."
           FIRST_COMMIT="8569e2ba66d5971f461a85d3344b1437f6d6c3ee"
           LAST_COMMIT="fa97c7232a31874f42bc57eec10dc5ad19f3e447"
 
-          # -X theirs 以补丁内容为准，自动解决冲突
-          git cherry-pick -X theirs ${FIRST_COMMIT}^..${LAST_COMMIT} || {
-            echo "Cherry-pick failed, aborting."
+          echo "Cherry-picking first commit..."
+          git cherry-pick -X theirs ${FIRST_COMMIT} || {
+            echo "Failed to cherry-pick ${FIRST_COMMIT}"
             git cherry-pick --abort
             exit 1
           }
-          echo "Cherry-pick applied successfully."
+
+          # 获取中间所有提交的哈希（正序）
+          COMMITS=$(git log ${FIRST_COMMIT}..${LAST_COMMIT} --format=%H --reverse)
+          for commit in $COMMITS; do
+            echo "Cherry-picking $commit..."
+            git cherry-pick -X theirs $commit || {
+              echo "Failed to cherry-pick $commit"
+              git cherry-pick --abort
+              exit 1
+            }
+          done
+
+          echo "All patches applied successfully."
 
       # ------------------------------------------------------------
       # 步骤 4：注释缺失的 Kconfig / Makefile 引用
